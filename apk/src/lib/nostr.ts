@@ -725,7 +725,10 @@ export async function fetchContests(): Promise<ContestEvent[]> {
     ];
 
     console.log("[Nostr] Fetching active Contests (Kind 31924)...");
-    const events = await ndk.fetchEvents(filters);
+    const events = await Promise.race([
+        ndk.fetchEvents(filters),
+        new Promise<Set<NDKEvent>>((resolve) => setTimeout(() => resolve(new Set()), 5000))
+    ]) as Set<NDKEvent>;
 
     const contests: ContestEvent[] = [];
     const aTagsToFetch: string[] = [];
@@ -770,7 +773,10 @@ export async function fetchContests(): Promise<ContestEvent[]> {
     }
 
     if (aTagsToFetch.length > 0) {
-        const rsvpEvents = await ndk.fetchEvents({ kinds: [31925 as any], "#a": aTagsToFetch });
+        const rsvpEvents = await Promise.race([
+            ndk.fetchEvents({ kinds: [31925 as any], "#a": aTagsToFetch }),
+            new Promise<Set<NDKEvent>>((resolve) => setTimeout(() => resolve(new Set()), 3000))
+        ]) as Set<NDKEvent>;
         for (const rsvp of rsvpEvents) {
             const aTagMatch = rsvp.getMatchingTags("a")[0]?.[1];
             if (aTagMatch && rsvp.getMatchingTags("l")[0]?.[1] === "accepted") {

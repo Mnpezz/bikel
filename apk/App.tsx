@@ -569,6 +569,12 @@ export default function App() {
                                 const joined = await publishRSVP(c);
                                 if (joined) {
                                   Alert.alert("Success", "You are entered into the contest!");
+                                  // Optimistic UI update
+                                  setActiveContests(prev => prev.map(contest =>
+                                    contest.id === c.id
+                                      ? { ...contest, attendees: [...contest.attendees, currentHex] }
+                                      : contest
+                                  ));
                                   const newContests = await fetchContests();
                                   setActiveContests(newContests);
                                 }
