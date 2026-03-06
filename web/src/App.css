@@ -233,20 +233,34 @@
 
 /* --- Mobile Responsiveness --- */
 @media (max-width: 768px) {
+  .header {
+    height: auto;
+    padding: 12px 5%;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
   .logo {
     font-size: 1.2rem;
+  }
+
+  .relay-text {
+    display: none;
+    /* Hide relay text to save space for icons */
   }
 
   /* Wrap Header Actions gracefully */
   .header-actions {
     display: flex;
     flex-wrap: wrap;
-    gap: 8px;
+    gap: 6px;
     justify-content: flex-end;
+    width: 100%;
+    /* Force icons to own line if cramped */
   }
 
   .header-actions button {
-    padding: 8px 12px;
+    padding: 8px 10px;
     font-size: 0.85rem;
   }
 

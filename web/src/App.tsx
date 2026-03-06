@@ -143,7 +143,7 @@ function App() {
 
         <div className="relay-status">
           <div className={`status-indicator ${isConnected ? 'connected' : ''}`}></div>
-          {isConnected ? 'Connected to Relays' : 'Connecting...'}
+          <span className="relay-text">{isConnected ? 'Connected to Relays' : 'Connecting...'}</span>
         </div>
 
         <div className="header-actions">
