@@ -818,7 +818,7 @@ function App() {
           </p>
 
           <a
-            href="/apk/app-release.apk"
+            href="https://github.com/mnpezz/bikel/raw/main/apk/android/app/build/outputs/apk/release/app-release.apk"
             download
             className="btn btn-primary"
             style={{
