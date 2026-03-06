@@ -69,7 +69,7 @@ Because the `/backend` Bot needs an infinite server process (to constantly liste
    ```
 4. Clone your public GitHub repository:
    ```bash
-   git clone https://github.com/YOUR_USERNAME/bikel.git
+   git clone https://github.com/mnpezz/bikel.git
    cd bikel/backend
    ```
 5. Install the backend dependencies:
