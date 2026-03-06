@@ -1,0 +1,20 @@
+{
+    "name": "bikel-bot",
+    "version": "1.0.0",
+    "description": "Automated payout bot for Bikel weekly contests",
+    "main": "index.js",
+    "scripts": {
+        "start": "node index.js"
+    },
+    "dependencies": {
+        "@noble/secp256k1": "^3.0.0",
+        "@nostr-dev-kit/ndk": "^2.11.1",
+        "axios": "^1.6.2",
+        "dotenv": "^16.3.1",
+        "lnurl": "^0.27.0",
+        "node-cron": "^3.0.3",
+        "websocket-polyfill": "^1.0.0",
+        "ws": "^7.5.10"
+    },
+    "type": "module"
+}

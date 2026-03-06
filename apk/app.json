@@ -1,0 +1,35 @@
+{
+  "expo": {
+    "name": "Bikel",
+    "slug": "bikel",
+    "version": "1.0.0",
+    "newArchEnabled": false,
+    "orientation": "portrait",
+    "icon": "./assets/bikelLogo.jpg",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "image": "./assets/bikelLogo.jpg",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "package": "com.bikel.app",
+      "adaptiveIcon": {
+        "backgroundColor": "#000000",
+        "foregroundImage": "./assets/bikelLogo.jpg",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "@react-native-community/datetimepicker"
+    ]
+  }
+}

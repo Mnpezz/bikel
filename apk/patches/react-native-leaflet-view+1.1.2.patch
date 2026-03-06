@@ -1,0 +1,22 @@
+diff --git a/node_modules/react-native-leaflet-view/android/build.gradle b/node_modules/react-native-leaflet-view/android/build.gradle
+index 6a41eb0..1787140 100644
+--- a/node_modules/react-native-leaflet-view/android/build.gradle
++++ b/node_modules/react-native-leaflet-view/android/build.gradle
+@@ -4,7 +4,7 @@ buildscript {
+ 
+   repositories {
+     google()
+-    jcenter()
++    mavenCentral()
+   }
+ 
+   dependencies {
+@@ -52,7 +52,7 @@ android {
+ 
+ repositories {
+   mavenCentral()
+-  jcenter()
++  mavenCentral()
+   google()
+ 
+   def found = false

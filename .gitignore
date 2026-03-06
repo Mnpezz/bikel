@@ -1,0 +1,19 @@
+# System Files
+.DS_Store
+
+# IDEs and Editors
+.idea/
+.vscode/
+
+# Temporary
+tmp/
+
+# Dependencies
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# Secrets
+.env
+*.env
+.env.*

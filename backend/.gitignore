@@ -1,0 +1,21 @@
+# API Keys and Passwords
+.env
+
+# System Files
+.DS_Store
+
+# IDEs and Editors
+.idea/
+.vscode/
+
+# Node
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# Temporary
+tmp/
+
+# Logs
+logs/
+*.log
