@@ -100,3 +100,13 @@ Because the `/backend` Bot needs an infinite server process (to constantly liste
 4. Create a tag (e.g., `v1.0.0`) and add a title and description.
 5. Drag and drop your compiled `/apk/app-release.apk` file into the "Attach binaries" box.
 6. Click **Publish release**. Users can now download your exact APK directly from GitHub!
+
+---
+
+## 5. Escrow Bot Management
+
+Check if the bot is alive/online: pm2 status (This will show a green online badge, the CPU usage, and how much RAM it's holding)
+
+Read the live terminal outputs (the console.logs): pm2 logs bikel-bot (This will stream the exact same Nostr "Connected to Relays" messages you see locally!)
+
+Restart the bot (if you pull latest code from GitHub): pm2 restart bikel-bot
