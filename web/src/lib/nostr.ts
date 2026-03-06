@@ -554,7 +554,7 @@ export async function fetchDMs(withPubkey: string): Promise<DMessage[]> {
 
     for (const event of events) {
         try {
-            await event.decrypt(otherUser);
+            await event.decrypt(otherUser, ndk.signer, 'nip04');
             messages.push({
                 id: event.id,
                 sender: event.pubkey,
@@ -591,7 +591,7 @@ export async function sendDM(toPubkey: string, text: string): Promise<boolean> {
 
     console.log('[Nostr] Encrypting and publishing DM...');
     try {
-        await event.encrypt(recipient); // NDK automagically uses the signer
+        await event.encrypt(recipient, ndk.signer, 'nip04'); // Force NIP-04 for Kind 4
         await event.publish();
         console.log(`[Nostr] DM sent! ID: ${event.id}`);
         return true;
