@@ -1335,10 +1335,8 @@ export default function App() {
                         );
                         await publishScheduledRide(postRideTitle || "Group Ride", postRideDesc || "Join my ride!", startUnix, postRideLocation, routePoints);
 
-                        // Dual-publish public scheduled rides to the global feed & RunSTR
-                        if (postRidePrivacy === 'full') {
-                          await publishRide(distance, duration, routePoints, postRidePrivacy, postRideTitle, postRideDesc, postRideImageUrl);
-                        }
+                        // Dual-publish public/hidden scheduled rides to the global feed & RunSTR
+                        await publishRide(distance, duration, routePoints, postRidePrivacy, postRideTitle, postRideDesc, postRideImageUrl);
 
                         Alert.alert("Ride Scheduled!", "Your group ride was successfully published.");
 
@@ -1356,6 +1354,10 @@ export default function App() {
                         try {
                           const updatedSchedules = await fetchScheduledRides();
                           setScheduledRides(updatedSchedules);
+                          const updatedRecent = await fetchRecentRides();
+                          setGlobalRides(updatedRecent);
+                          const mine = await fetchMyRides();
+                          setMyRides(mine);
                         } catch (e) { }
                       } else {
                         await publishRide(distance, duration, routePoints, postRidePrivacy, postRideTitle, postRideDesc, postRideImageUrl);

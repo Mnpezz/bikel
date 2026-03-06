@@ -621,7 +621,12 @@ function App() {
                         comments.map(c => (
                           <div key={c.id} style={{ background: 'rgba(0,0,0,0.3)', padding: '12px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.05)' }}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
-                              <span style={{ color: '#00ffaa', fontSize: '12px', fontWeight: 'bold' }}>{c.pubkey.substring(0, 10)}...</span>
+                              <span
+                                style={{ color: '#00ffaa', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer', textDecoration: 'underline' }}
+                                onClick={(e) => { e.stopPropagation(); loadAuthorProfile(c.pubkey); }}
+                              >
+                                {c.pubkey.substring(0, 10)}...
+                              </span>
                               <span style={{ color: '#888', fontSize: '12px' }}>{formatDistanceToNow(c.createdAt * 1000, { addSuffix: true })}</span>
                             </div>
                             <div style={{ color: '#eee', fontSize: '14px', lineHeight: '1.4' }}>{c.content}</div>
