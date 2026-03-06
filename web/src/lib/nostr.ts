@@ -326,6 +326,8 @@ export interface ScheduledRideEvent {
     route?: number[][];
     timezone?: string;
     image?: string;
+    distance?: string;
+    duration?: string;
     kind: 31923;
 }
 
@@ -371,6 +373,8 @@ export async function fetchScheduledRides(): Promise<ScheduledRideEvent[]> {
                 }
                 const tzTag = event.getMatchingTags("start_tz")[0]?.[1];
                 const imageTag = event.getMatchingTags("image")[0]?.[1];
+                const distanceTag = event.getMatchingTags("distance")[0]?.[1];
+                const durationTag = event.getMatchingTags("duration")[0]?.[1];
 
                 scheduledRides.push({
                     id: event.id,
@@ -386,6 +390,8 @@ export async function fetchScheduledRides(): Promise<ScheduledRideEvent[]> {
                     route: parsedRoute,
                     timezone: tzTag,
                     image: imageTag,
+                    distance: distanceTag,
+                    duration: durationTag,
                     kind: 31923
                 });
             }

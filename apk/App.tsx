@@ -1333,7 +1333,7 @@ export default function App() {
                             postRideTime.getHours(), postRideTime.getMinutes()
                           ).getTime() / 1000
                         );
-                        await publishScheduledRide(postRideTitle || "Group Ride", postRideDesc || "Join my ride!", startUnix, postRideLocation, routePoints);
+                        await publishScheduledRide(postRideTitle || "Group Ride", postRideDesc || "Join my ride!", startUnix, postRideLocation, routePoints, postRideImageUrl, distance, duration);
 
                         // Dual-publish public/hidden scheduled rides to the global feed & RunSTR
                         await publishRide(distance, duration, routePoints, postRidePrivacy, postRideTitle, postRideDesc, postRideImageUrl);

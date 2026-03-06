@@ -344,11 +344,12 @@ function App() {
                                     pubkey: event.pubkey,
                                     hexPubkey: event.hexPubkey,
                                     time: event.startTime,
-                                    distance: 'GPS Route',
-                                    duration: 'Scheduled',
+                                    distance: event.distance || 'GPS Route',
+                                    duration: event.duration || 'Scheduled',
                                     visibility: 'full',
                                     route: event.route!,
-                                    kind: 33301
+                                    kind: 33301,
+                                    image: event.image
                                   });
                                 }}
                               >
@@ -553,7 +554,7 @@ function App() {
                 <div>
                   <h2 style={{ margin: 0, color: '#00ffaa' }}>Ride Details</h2>
                   <div style={{ color: '#888', fontSize: '14px', marginTop: '4px' }}>
-                    {formatDistanceToNow(selectedRide.time * 1000, { addSuffix: true })} by
+                    {formatDistanceToNow(selectedRide.time * 1000, { addSuffix: true })} {' by '}
                     <span
                       style={{ color: '#00ffaa', cursor: 'pointer', marginLeft: '4px', textDecoration: 'underline' }}
                       onClick={() => loadAuthorProfile(selectedRide.pubkey)}
@@ -566,6 +567,12 @@ function App() {
                   <X size={24} />
                 </button>
               </div>
+
+              {selectedRide.image && selectedRide.image !== 'https://bikel.com/bikelLogo.jpg' && selectedRide.image !== '/bikelLogo.jpg' && (
+                <div style={{ padding: '20px 20px 0' }}>
+                  <img src={selectedRide.image} alt="Ride Media" style={{ width: '100%', height: '200px', objectFit: 'cover', borderRadius: '8px' }} />
+                </div>
+              )}
 
               <div className="modal-stats" style={{ display: 'flex', padding: '20px', gap: '40px', background: 'rgba(0,0,0,0.3)' }}>
                 <div className="stat-box">

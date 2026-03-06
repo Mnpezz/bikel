@@ -452,6 +452,8 @@ export interface ScheduledRideEvent {
     route?: number[][];
     timezone?: string;
     image?: string;
+    distance?: string;
+    duration?: string;
 }
 
 export interface ContestEvent {
@@ -567,6 +569,8 @@ export async function fetchScheduledRides(): Promise<ScheduledRideEvent[]> {
                 }
                 const tzTag = event.getMatchingTags("start_tz")[0]?.[1];
                 const imageTag = event.getMatchingTags("image")[0]?.[1];
+                const distanceTag = event.getMatchingTags("distance")[0]?.[1];
+                const durationTag = event.getMatchingTags("duration")[0]?.[1];
 
                 scheduledRides.push({
                     id: event.id,
@@ -579,10 +583,12 @@ export async function fetchScheduledRides(): Promise<ScheduledRideEvent[]> {
                     locationStr,
                     createdAt: event.created_at || Math.floor(Date.now() / 1000),
                     attendees: [],
-                    kind: 31923,
                     route: parsedRoute,
                     timezone: tzTag,
-                    image: imageTag
+                    image: imageTag,
+                    distance: distanceTag,
+                    duration: durationTag,
+                    kind: 31923
                 });
             }
         } catch (e) { }
@@ -630,7 +636,10 @@ export async function publishScheduledRide(
     description: string,
     startTimestamp: number,
     locationStr: string,
-    routePoints?: { lat: number; lng: number }[]
+    routePoints?: { lat: number; lng: number }[],
+    imageUrl?: string,
+    distance?: number,
+    duration?: number
 ): Promise<string> {
     const ndk = await connectNDK();
     const event = new NDKEvent(ndk);
@@ -649,8 +658,20 @@ export async function publishScheduledRide(
         ['t', 'cycling'],
         ['t', 'bikel'],
         ['client', 'bikel'],
-        ['image', 'https://bikel.com/bikelLogo.jpg']
+        ['image', imageUrl || 'https://bikel.com/bikelLogo.jpg']
     ];
+
+    if (distance !== undefined) {
+        event.tags.push(['distance', distance.toString()]);
+    }
+
+    if (duration !== undefined) {
+        const h = Math.floor(duration / 3600);
+        const m = Math.floor((duration % 3600) / 60);
+        const s = duration % 60;
+        const durStr = h > 0 ? `${h}h ${m}m` : `${m}m ${s}s`;
+        event.tags.push(['duration', durStr]);
+    }
 
     try {
         const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
