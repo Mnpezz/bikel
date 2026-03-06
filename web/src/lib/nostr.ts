@@ -524,11 +524,13 @@ export async function fetchDMs(withPubkey: string): Promise<DMessage[]> {
     const currentUser = await ndk.signer.user();
 
     let hexPubkey = withPubkey;
-    let otherUser = ndk.getUser({ pubkey: withPubkey });
+    let otherUser: NDKUser;
 
     if (withPubkey.startsWith('npub1')) {
         otherUser = ndk.getUser({ npub: withPubkey });
         hexPubkey = otherUser.pubkey;
+    } else {
+        otherUser = ndk.getUser({ pubkey: withPubkey });
     }
 
     console.log(`[Nostr] Fetching DMs between ${currentUser.pubkey} and ${hexPubkey}...`);
@@ -552,7 +554,7 @@ export async function fetchDMs(withPubkey: string): Promise<DMessage[]> {
 
     for (const event of events) {
         try {
-            await event.decrypt(currentUser.pubkey === event.pubkey ? otherUser : currentUser);
+            await event.decrypt(otherUser);
             messages.push({
                 id: event.id,
                 sender: event.pubkey,
@@ -573,11 +575,13 @@ export async function sendDM(toPubkey: string, text: string): Promise<boolean> {
     if (!ndk.signer) throw new Error("Must be signed in to send DMs");
 
     let hexPubkey = toPubkey;
-    let recipient = ndk.getUser({ pubkey: toPubkey });
+    let recipient: NDKUser;
 
     if (toPubkey.startsWith('npub1')) {
         recipient = ndk.getUser({ npub: toPubkey });
         hexPubkey = recipient.pubkey;
+    } else {
+        recipient = ndk.getUser({ pubkey: toPubkey });
     }
 
     const event = new NDKEvent(ndk);
