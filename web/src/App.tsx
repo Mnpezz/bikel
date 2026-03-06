@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { MapContainer, TileLayer, CircleMarker, Popup, Polyline, useMap } from 'react-leaflet';
-import { Bike, Activity, CalendarPlus, Zap, LogIn, Info, HelpCircle, Smartphone, X, Clock, Route, CheckCircle, RefreshCw, Map as MapIcon } from 'lucide-react';
+import { Bike, Activity, CalendarPlus, Zap, LogIn, Info, HelpCircle, Smartphone, X, Clock, Route, CheckCircle, RefreshCw, Map as MapIcon, ChevronUp, ChevronDown } from 'lucide-react';
 import { formatDistanceToNow, format } from 'date-fns';
 import { connectNDK, fetchRecentRides, fetchUserRides, fetchScheduledRides, loginNip07, publishRSVP, connectNWC, zapRideEvent, fetchComments, publishComment, fetchDMs, sendDM } from './lib/nostr';
 import type { RideEvent, ScheduledRideEvent, RideComment, DMessage } from './lib/nostr';
@@ -17,6 +17,7 @@ function App() {
   const [selectedRide, setSelectedRide] = useState<RideEvent | null>(null);
   const [viewingAuthor, setViewingAuthor] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'global' | 'personal' | 'scheduled' | 'author'>('global');
+  const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
 
   // Lightning Wallet states
   const [showNWCModal, setShowNWCModal] = useState(false);
@@ -218,7 +219,15 @@ function App() {
       {/* Main Content */}
       <main className="main-content">
         {/* Sidebar */}
-        <aside className="sidebar">
+        <aside className={`sidebar ${isSidebarExpanded ? 'expanded' : ''}`}>
+
+          {/* Mobile Drag Handle / Expand Toggle */}
+          <div
+            className="mobile-sidebar-toggle"
+            onClick={() => setIsSidebarExpanded(!isSidebarExpanded)}
+          >
+            {isSidebarExpanded ? <ChevronDown size={24} color="#888" /> : <ChevronUp size={24} color="#888" />}
+          </div>
 
           <div className="widget glass-panel animate-fade-in" style={{ animationDelay: '0.1s' }}>
             <h2 className="widget-title"><Zap size={16} /> Global Stats (24h)</h2>
