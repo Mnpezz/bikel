@@ -34,6 +34,7 @@ function App() {
   const [comments, setComments] = useState<RideComment[]>([]);
   const [newComment, setNewComment] = useState('');
   const [isPublishingComment, setIsPublishingComment] = useState(false);
+  const [isDiscussionExpanded, setIsDiscussionExpanded] = useState(false);
 
   // DM states
   const [activeDMUser, setActiveDMUser] = useState<string | null>(null);
@@ -547,7 +548,7 @@ function App() {
       {
         selectedRide && (
           <div className="modal-overlay">
-            <div className="modal-content animate-fade-in glass-panel" style={{ width: '80%', maxWidth: '900px', height: '80vh', display: 'flex', flexDirection: 'column' }}>
+            <div className="modal-content animate-fade-in glass-panel" style={{ width: '90%', maxWidth: '900px', height: '90vh', display: 'flex', flexDirection: 'column' }}>
               <div className="modal-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '20px', borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
                 <div>
                   <h2 style={{ margin: 0, color: '#00ffaa' }}>Ride Details</h2>
@@ -603,66 +604,79 @@ function App() {
               </div>
 
               <div className="modal-comments" style={{ padding: '20px', background: 'rgba(255,255,255,0.02)', borderTop: '1px solid rgba(255,255,255,0.1)' }}>
-                <h3 style={{ margin: '0 0 16px', color: '#fff', fontSize: '16px' }}>Discussion</h3>
-                <div style={{ maxHeight: '180px', overflowY: 'auto', marginBottom: '16px', display: 'flex', flexDirection: 'column', gap: '12px', paddingRight: '8px' }}>
-                  {comments.length === 0 ? (
-                    <div style={{ color: '#666', fontSize: '14px', fontStyle: 'italic' }}>No comments yet. Be the first!</div>
-                  ) : (
-                    comments.map(c => (
-                      <div key={c.id} style={{ background: 'rgba(0,0,0,0.3)', padding: '12px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.05)' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
-                          <span style={{ color: '#00ffaa', fontSize: '12px', fontWeight: 'bold' }}>{c.pubkey.substring(0, 10)}...</span>
-                          <span style={{ color: '#888', fontSize: '12px' }}>{formatDistanceToNow(c.createdAt * 1000, { addSuffix: true })}</span>
-                        </div>
-                        <div style={{ color: '#eee', fontSize: '14px', lineHeight: '1.4' }}>{c.content}</div>
-                      </div>
-                    ))
-                  )}
+                <div
+                  style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer', margin: isDiscussionExpanded ? '0 0 16px' : '0' }}
+                  onClick={() => setIsDiscussionExpanded(!isDiscussionExpanded)}
+                >
+                  <h3 style={{ margin: 0, color: '#fff', fontSize: '16px' }}>Discussion ({comments.length})</h3>
+                  {isDiscussionExpanded ? <ChevronDown size={20} color="#fff" /> : <ChevronUp size={20} color="#fff" />}
                 </div>
-                {user ? (
-                  <div style={{ display: 'flex', gap: '12px' }}>
-                    <input
-                      type="text"
-                      value={newComment}
-                      onChange={(e) => setNewComment(e.target.value)}
-                      placeholder="Write a comment..."
-                      disabled={isPublishingComment}
-                      style={{ flex: 1, padding: '12px', borderRadius: '8px', background: 'rgba(255,255,255,0.1)', border: '1px solid rgba(255,255,255,0.2)', color: '#fff' }}
-                      onKeyDown={async (e) => {
-                        if (e.key === 'Enter' && !isPublishingComment && newComment.trim() && selectedRide) {
-                          setIsPublishingComment(true);
-                          const success = await publishComment(selectedRide.id, newComment.trim());
-                          if (success) {
-                            setNewComment('');
-                            fetchComments(selectedRide.id).then(setComments);
-                          } else {
-                            alert("Failed to publish comment.");
-                          }
-                          setIsPublishingComment(false);
-                        }
-                      }}
-                    />
-                    <button
-                      className="btn btn-primary"
-                      disabled={isPublishingComment || !newComment.trim()}
-                      onClick={async () => {
-                        if (!newComment.trim() || !selectedRide) return;
-                        setIsPublishingComment(true);
-                        const success = await publishComment(selectedRide.id, newComment.trim());
-                        if (success) {
-                          setNewComment('');
-                          fetchComments(selectedRide.id).then(setComments);
-                        } else {
-                          alert("Failed to publish comment.");
-                        }
-                        setIsPublishingComment(false);
-                      }}
-                    >
-                      {isPublishingComment ? 'Posting...' : 'Post'}
-                    </button>
-                  </div>
-                ) : (
-                  <div style={{ color: '#888', fontSize: '14px' }}>Sign in to connect wallet or see balance.</div>
+
+                {isDiscussionExpanded && (
+                  <>
+                    <div style={{ maxHeight: '180px', overflowY: 'auto', marginBottom: '16px', display: 'flex', flexDirection: 'column', gap: '12px', paddingRight: '8px' }}>
+                      {comments.length === 0 ? (
+                        <div style={{ color: '#666', fontSize: '14px', fontStyle: 'italic' }}>No comments yet. Be the first!</div>
+                      ) : (
+                        comments.map(c => (
+                          <div key={c.id} style={{ background: 'rgba(0,0,0,0.3)', padding: '12px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+                              <span style={{ color: '#00ffaa', fontSize: '12px', fontWeight: 'bold' }}>{c.pubkey.substring(0, 10)}...</span>
+                              <span style={{ color: '#888', fontSize: '12px' }}>{formatDistanceToNow(c.createdAt * 1000, { addSuffix: true })}</span>
+                            </div>
+                            <div style={{ color: '#eee', fontSize: '14px', lineHeight: '1.4' }}>{c.content}</div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                    {user ? (
+                      <div style={{ display: 'flex', gap: '12px' }}>
+                        <input
+                          type="text"
+                          value={newComment}
+                          onChange={(e) => setNewComment(e.target.value)}
+                          placeholder="Write a comment..."
+                          disabled={isPublishingComment}
+                          style={{ flex: 1, padding: '12px', borderRadius: '8px', background: 'rgba(255,255,255,0.1)', border: '1px solid rgba(255,255,255,0.2)', color: '#fff' }}
+                          onKeyDown={async (e) => {
+                            if (e.key === 'Enter' && !isPublishingComment && newComment.trim() && selectedRide) {
+                              setIsPublishingComment(true);
+                              const success = await publishComment(selectedRide.id, newComment.trim());
+                              if (success) {
+                                setNewComment('');
+                                fetchComments(selectedRide.id).then(setComments);
+                              } else {
+                                alert("Failed to publish comment.");
+                              }
+                              setIsPublishingComment(false);
+                            }
+                          }}
+                        />
+                        <button
+                          className="btn btn-primary"
+                          disabled={isPublishingComment || !newComment.trim()}
+                          onClick={async () => {
+                            if (!newComment.trim() || !selectedRide) return;
+                            setIsPublishingComment(true);
+                            const success = await publishComment(selectedRide.id, newComment.trim());
+                            if (success) {
+                              setNewComment('');
+                              fetchComments(selectedRide.id).then(setComments);
+                            } else {
+                              alert("Failed to publish comment.");
+                            }
+                            setIsPublishingComment(false);
+                          }}
+                        >
+                          {isPublishingComment ? 'Posting...' : 'Post'}
+                        </button>
+                      </div>
+                    ) : (
+                      <div style={{ color: '#888', fontSize: '14px', textAlign: 'center' }}>
+                        Please <a href="#" onClick={(e) => { e.preventDefault(); loginNip07().then(setUser); }} style={{ color: '#00ffaa', textDecoration: 'underline' }}>sign in</a> to join the discussion.
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             </div>
