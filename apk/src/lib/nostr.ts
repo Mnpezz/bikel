@@ -146,8 +146,12 @@ export async function publishRide(
 
     // For the MVP, if visibility is full, let's just dump the route in content as a lightweight JSON
     if (visibility === 'full' && routePoints.length > 0) {
-        // Compressed geo data (6 decimals = ~11cm precision):
-        const compressedGeo = routePoints.map(p => [Number(p.lat.toFixed(6)), Number(p.lng.toFixed(6))]);
+        // Compressed geo data (6 decimals = ~11cm precision), max 1000 points to fit in 64kb Nostr limit
+        const step = Math.ceil(routePoints.length / 1000);
+        const compressedGeo = routePoints
+            .filter((_, index) => index % step === 0 || index === routePoints.length - 1)
+            .map(p => [Number(p.lat.toFixed(6)), Number(p.lng.toFixed(6))]);
+
         event.content = JSON.stringify({
             route: compressedGeo
         });
@@ -913,25 +917,31 @@ export async function fetchDMs(withPubkey: string): Promise<DMessage[]> {
     // Fallback to fetch current user pubkey since signer.user() might not resolve instantly on mobile depending on implementation
     const currentUser = await ndk.signer.user();
 
-    console.log(`[Nostr - Mobile] Fetching DMs between ${currentUser.pubkey} and ${withPubkey}...`);
+    let hexPubkey = withPubkey;
+    let otherUser = ndk.getUser({ pubkey: withPubkey });
+
+    if (withPubkey.startsWith('npub1')) {
+        otherUser = ndk.getUser({ npub: withPubkey });
+        hexPubkey = otherUser.pubkey;
+    }
+
+    console.log(`[Nostr - Mobile] Fetching DMs between ${currentUser.pubkey} and ${hexPubkey}...`);
 
     const filterSent: NDKFilter = {
         kinds: [4],
         authors: [currentUser.pubkey],
-        "#p": [withPubkey],
+        "#p": [hexPubkey],
         limit: 50,
     };
     const filterReceived: NDKFilter = {
         kinds: [4],
-        authors: [withPubkey],
+        authors: [hexPubkey],
         "#p": [currentUser.pubkey],
         limit: 50,
     };
 
     const events = await ndk.fetchEvents([filterSent, filterReceived]);
     const messages: DMessage[] = [];
-
-    const otherUser = ndk.getUser({ pubkey: withPubkey });
 
     for (const event of events) {
         try {
@@ -955,12 +965,18 @@ export async function sendDM(toPubkey: string, text: string): Promise<boolean> {
     const ndk = await connectNDK();
     if (!ndk.signer) throw new Error("Must be signed in to send DMs");
 
-    const recipient = ndk.getUser({ pubkey: toPubkey });
+    let hexPubkey = toPubkey;
+    let recipient = ndk.getUser({ pubkey: toPubkey });
+
+    if (toPubkey.startsWith('npub1')) {
+        recipient = ndk.getUser({ npub: toPubkey });
+        hexPubkey = recipient.pubkey;
+    }
 
     const event = new NDKEvent(ndk);
     event.kind = 4; // NIP-04 Direct Message
     event.content = text;
-    event.tags = [['p', toPubkey]];
+    event.tags = [['p', hexPubkey]];
 
     console.log('[Nostr - Mobile] Encrypting and publishing DM...');
     try {

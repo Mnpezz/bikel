@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { MapContainer, TileLayer, CircleMarker, Popup, Polyline, useMap } from 'react-leaflet';
-import { Bike, Activity, CalendarPlus, Zap, LogIn, Info, HelpCircle, Smartphone, X, Clock, Route, CheckCircle, RefreshCw, Map as MapIcon, ChevronUp, ChevronDown } from 'lucide-react';
+import { Bike, Activity, CalendarPlus, Zap, LogIn, Info, HelpCircle, Smartphone, X, Clock, Route, CheckCircle, RefreshCw, Map as MapIcon, ChevronUp, ChevronDown, Users } from 'lucide-react';
 import { formatDistanceToNow, format } from 'date-fns';
 import { connectNDK, fetchRecentRides, fetchUserRides, fetchScheduledRides, loginNip07, publishRSVP, connectNWC, zapRideEvent, fetchComments, publishComment, fetchDMs, sendDM } from './lib/nostr';
 import type { RideEvent, ScheduledRideEvent, RideComment, DMessage } from './lib/nostr';
@@ -281,7 +281,6 @@ function App() {
               {viewMode === 'scheduled' ? (() => {
                 const nowSeconds = Math.floor(Date.now() / 1000);
                 const upcomingRides = scheduledRides.filter(r => r.startTime >= nowSeconds).sort((a, b) => a.startTime - b.startTime);
-                const pastRides = scheduledRides.filter(r => r.startTime < nowSeconds).sort((a, b) => b.startTime - a.startTime);
 
                 return (
                   <>
@@ -377,501 +376,564 @@ function App() {
                                 <Zap size={14} fill={zappingEventId === event.id ? "#eab308" : "none"} /> 21
                               </button>
                             )}
-                      ))}
-                          </>
-                          );
-                })() : null}
-
-                          {viewMode !== 'scheduled' && (viewMode === 'personal' ? myRides : viewMode === 'author' ? authorRides : rides).map((ride) => (
-                            <div className="ride-card" key={ride.id} onClick={() => setSelectedRide(ride)}>
-                              <img src={ride.image || '/bikelLogo.jpg'} alt="Ride Map" style={{ width: '100%', height: '120px', objectFit: 'cover', borderRadius: '8px', marginBottom: '12px' }} />
-                              <div className="ride-header">
-                                <div className="ride-pubkey" title={ride.pubkey}>
-                                  <div className="avatar-mini"></div>
-                                  <span onClick={(e) => { e.stopPropagation(); loadAuthorProfile(ride.pubkey); }} style={{ cursor: 'pointer' }}>
-                                    {ride.pubkey.substring(0, 10)}...
-                                  </span>
-                                </div>
-                                <div className="ride-time">{formatDistanceToNow(ride.time * 1000, { addSuffix: true })}</div>
-                              </div>
-                              <div className="ride-stats">
-                                <div className="stat-item">
-                                  <Route size={14} className="icon" /> {ride.distance} mi
-                                </div>
-                                <div className="stat-item">
-                                  <Clock size={14} className="icon" /> {ride.duration}
-                                </div>
-                                <button
-                                  onClick={async (e) => {
-                                    e.stopPropagation();
-                                    if (zappingEventId) return;
-                                    setZappingEventId(ride.id);
-                                    try {
-                                      await zapRideEvent(ride.id, ride.hexPubkey, ride.kind, 21, "Great ride!");
-                                      alert("Successfully sent 21 sats!");
-                                    } catch (e: any) {
-                                      alert("Zap failed: " + (e.message || "Unknown error"));
-                                    }
-                                    setZappingEventId(null);
-                                  }}
-                                  className="stat-item"
-                                  style={{ background: 'rgba(234, 179, 8, 0.1)', border: '1px solid rgba(234, 179, 8, 0.3)', color: '#eab308', marginLeft: 'auto', borderRadius: '12px', padding: '2px 8px', cursor: 'pointer' }}
-                                  title="Zap Rider 21 Sats"
-                                >
-                                  <Zap size={12} fill={zappingEventId === ride.id ? "#eab308" : "none"} /> 21
-                                </button>
-                                )}
-                              </div>
-                            </div>
-                          ))}
+                            <a href={`nostr:${event.pubkey}`} onClick={(e) => e.stopPropagation()} style={{ color: '#00ccff', textDecoration: 'underline' }}>
+                              Message Organizer
+                            </a>
+                          </div>
                         </div>
                       </div>
-        </aside >
+                    ))}
+                  </>
+                );
+              })() : null}
 
-                  {/* Map View */ }
-                  < section className = "map-wrapper animate-fade-in" style = {{ animationDelay: '0.3s' }
-              }>
-                <MapContainer center={[51.505, -0.09]} zoom={13} scrollWheelZoom={true} zoomControl={false}>
-                  {/* Dark Mode Tiles - CartoDB Dark Matter */}
-                  <TileLayer
-                    attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
-                    url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
-                  />
-
-                  {(viewMode === 'personal' ? myRides : rides).map(ride => {
-                    if (ride.route.length === 0) return null;
-
-                    const startCoords: [number, number] = [ride.route[0][0], ride.route[0][1]];
-
-                    return (
-                      <div key={ride.id}>
-                        <CircleMarker
-                          center={startCoords}
-                          radius={6}
-                          pathOptions={{
-                            color: 'var(--accent-primary)',
-                            fillColor: 'var(--accent-primary)',
-                            fillOpacity: 0.8,
-                            weight: 2
-                          }}
-                          eventHandlers={{
-                            click: () => setSelectedRide(ride)
-                          }}
-                        >
-                          <Popup>
-                            <div style={{ color: '#000', fontSize: '13px' }}>
-                              <strong>{ride.pubkey.substring(0, 12)}...</strong><br />
-                              {ride.distance} mi in {ride.duration}
+              {viewMode === 'scheduled' && scheduledRides.length > 0 && (() => {
+                const nowSeconds = Math.floor(Date.now() / 1000);
+                const pastRides = scheduledRides.filter(r => r.startTime < nowSeconds).sort((a, b) => b.startTime - a.startTime);
+                if (pastRides.length === 0) return null;
+                return (
+                  <div style={{ marginTop: '24px' }}>
+                    <h3 style={{ color: '#888', marginBottom: '16px', fontSize: '14px', textTransform: 'uppercase', letterSpacing: '1px' }}>Past Rides</h3>
+                    {pastRides.map((event) => (
+                      <div className="ride-card" key={event.id} style={{ cursor: 'default', opacity: 0.6 }}>
+                        <img src={event.image || '/bikelLogo.jpg'} alt="Ride Map" style={{ width: '100%', height: '120px', objectFit: 'cover', borderRadius: '8px', marginBottom: '12px', filter: 'grayscale(50%)' }} />
+                        <div className="ride-header">
+                          <div style={{ fontWeight: 'bold', color: '#888' }}>{event.name}</div>
+                        </div>
+                        <div style={{ fontSize: '12px', color: '#666', marginTop: '4px', marginBottom: '8px' }}>
+                          {format(new Date(event.startTime * 1000), "EEEE, MMM d 'at' h:mm a")}
+                          {event.timezone ? ` (${event.timezone})` : ""}
+                        </div>
+                        <div style={{ fontSize: '13px', marginBottom: '12px', lineHeight: 1.4, color: '#888' }}>
+                          {event.description}
+                        </div>
+                        <div className="ride-stats" style={{ borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <div className="stat-item" style={{ color: '#888' }}>
+                              <Users size={14} className="icon" /> {event.attendees.length} Past Riders
                             </div>
-                          </Popup>
-                        </CircleMarker>
-                        <Polyline
-                          positions={ride.route as [number, number][]}
-                          pathOptions={{ color: 'var(--accent-primary)', weight: 3, opacity: 0.6 }}
-                          eventHandlers={{
-                            click: () => setSelectedRide(ride)
-                          }}
-                        />
-                      </div>
-                    );
-                  })}
-                </MapContainer>
-                  </section >
-          </main>
-
-          {/* Ride Detail Modal */}
-          {
-            selectedRide && (
-              <div className="modal-overlay">
-                <div className="modal-content animate-fade-in glass-panel" style={{ width: '80%', maxWidth: '900px', height: '80vh', display: 'flex', flexDirection: 'column' }}>
-                  <div className="modal-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '20px', borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
-                    <div>
-                      <h2 style={{ margin: 0, color: '#00ffaa' }}>Ride Details</h2>
-                      <div style={{ color: '#888', fontSize: '14px', marginTop: '4px' }}>
-                        {formatDistanceToNow(selectedRide.time * 1000, { addSuffix: true })} by
-                        <span
-                          style={{ color: '#00ffaa', cursor: 'pointer', marginLeft: '4px', textDecoration: 'underline' }}
-                          onClick={() => loadAuthorProfile(selectedRide.pubkey)}
-                        >
-                          {selectedRide.pubkey.substring(0, 16)}...
-                        </span>
-                      </div>
-                    </div>
-                    <button onClick={() => setSelectedRide(null)} className="btn btn-surface" style={{ padding: '8px' }}>
-                      <X size={24} />
-                    </button>
-                  </div>
-
-                  <div className="modal-stats" style={{ display: 'flex', padding: '20px', gap: '40px', background: 'rgba(0,0,0,0.3)' }}>
-                    <div className="stat-box">
-                      <div className="stat-value">{selectedRide.distance}</div>
-                      <div className="stat-label">MILES</div>
-                    </div>
-                    <div className="stat-box">
-                      <div className="stat-value">{selectedRide.duration}</div>
-                      <div className="stat-label">TIME</div>
-                    </div>
-                  </div>
-
-                  <div className="modal-map" style={{ flex: 1, position: 'relative' }}>
-                    {selectedRide.route.length > 0 ? (
-                      <MapContainer
-                        center={[selectedRide.route[0][0], selectedRide.route[0][1]]}
-                        zoom={14}
-                        style={{ height: '100%', width: '100%' }}
-                      >
-                        <TileLayer
-                          url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
-                        />
-                        <Polyline
-                          positions={selectedRide.route as [number, number][]}
-                          pathOptions={{ color: '#00ffaa', weight: 4, opacity: 0.8 }}
-                        />
-                        <CircleMarker center={[selectedRide.route[0][0], selectedRide.route[0][1]]} radius={6} pathOptions={{ color: '#00ffaa', fillOpacity: 1 }} />
-                        <CircleMarker center={[selectedRide.route[selectedRide.route.length - 1][0], selectedRide.route[selectedRide.route.length - 1][1]]} radius={6} pathOptions={{ color: '#ff4d4f', fillOpacity: 1 }} />
-                        <SetMapBounds route={selectedRide.route} />
-                      </MapContainer>
-                    ) : (
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#888' }}>
-                        No route data published for this ride.
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="modal-comments" style={{ padding: '20px', background: 'rgba(255,255,255,0.02)', borderTop: '1px solid rgba(255,255,255,0.1)' }}>
-                    <h3 style={{ margin: '0 0 16px', color: '#fff', fontSize: '16px' }}>Discussion</h3>
-                    <div style={{ maxHeight: '180px', overflowY: 'auto', marginBottom: '16px', display: 'flex', flexDirection: 'column', gap: '12px', paddingRight: '8px' }}>
-                      {comments.length === 0 ? (
-                        <div style={{ color: '#666', fontSize: '14px', fontStyle: 'italic' }}>No comments yet. Be the first!</div>
-                      ) : (
-                        comments.map(c => (
-                          <div key={c.id} style={{ background: 'rgba(0,0,0,0.3)', padding: '12px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.05)' }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
-                              <span style={{ color: '#00ffaa', fontSize: '12px', fontWeight: 'bold' }}>{c.pubkey.substring(0, 10)}...</span>
-                              <span style={{ color: '#888', fontSize: '12px' }}>{formatDistanceToNow(c.createdAt * 1000, { addSuffix: true })}</span>
-                            </div>
-                            <div style={{ color: '#eee', fontSize: '14px', lineHeight: '1.4' }}>{c.content}</div>
+                            {event.route && event.route.length > 0 && (
+                              <button
+                                className="stat-item"
+                                style={{ background: 'rgba(255, 255, 255, 0.05)', border: '1px solid rgba(255, 255, 255, 0.1)', cursor: 'pointer' }}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setSelectedRide({
+                                    id: event.dTag,
+                                    pubkey: event.hexPubkey,
+                                    hexPubkey: event.hexPubkey,
+                                    time: event.startTime,
+                                    distance: "0",
+                                    duration: "0",
+                                    visibility: "full",
+                                    route: event.route!,
+                                    kind: 33301
+                                  });
+                                }}
+                              >
+                                🗺️ Map
+                              </button>
+                            )}
                           </div>
-                        ))
-                      )}
-                    </div>
-                    {user ? (
-                      <div style={{ display: 'flex', gap: '12px' }}>
-                        <input
-                          type="text"
-                          value={newComment}
-                          onChange={(e) => setNewComment(e.target.value)}
-                          placeholder="Write a comment..."
-                          disabled={isPublishingComment}
-                          style={{ flex: 1, padding: '12px', borderRadius: '8px', background: 'rgba(255,255,255,0.1)', border: '1px solid rgba(255,255,255,0.2)', color: '#fff' }}
-                          onKeyDown={async (e) => {
-                            if (e.key === 'Enter' && !isPublishingComment && newComment.trim() && selectedRide) {
-                              setIsPublishingComment(true);
-                              const success = await publishComment(selectedRide.id, newComment.trim());
-                              if (success) {
-                                setNewComment('');
-                                fetchComments(selectedRide.id).then(setComments);
-                              } else {
-                                alert("Failed to publish comment.");
-                              }
-                              setIsPublishingComment(false);
-                            }
-                          }}
-                        />
-                        <button
-                          className="btn btn-primary"
-                          disabled={isPublishingComment || !newComment.trim()}
-                          onClick={async () => {
-                            if (!newComment.trim() || !selectedRide) return;
-                            setIsPublishingComment(true);
-                            const success = await publishComment(selectedRide.id, newComment.trim());
-                            if (success) {
-                              setNewComment('');
-                              fetchComments(selectedRide.id).then(setComments);
-                            } else {
-                              alert("Failed to publish comment.");
-                            }
-                            setIsPublishingComment(false);
-                          }}
-                        >
-                          {isPublishingComment ? 'Posting...' : 'Post'}
-                        </button>
+                        </div>
                       </div>
-                    ) : (
-                      <div style={{ color: '#888', fontSize: '14px' }}>Sign in to connect wallet or see balance.</div>
+                    ))}
+                  </div>
+                );
+              })()}
+
+              {viewMode !== 'scheduled' && (viewMode === 'personal' ? myRides : viewMode === 'author' ? authorRides : rides).map((ride) => (
+                <div className="ride-card" key={ride.id} onClick={() => setSelectedRide(ride)}>
+                  <img src={ride.image || '/bikelLogo.jpg'} alt="Ride Map" style={{ width: '100%', height: '120px', objectFit: 'cover', borderRadius: '8px', marginBottom: '12px' }} />
+                  <div className="ride-header">
+                    <div className="ride-pubkey" title={ride.pubkey}>
+                      <div className="avatar-mini"></div>
+                      <span onClick={(e) => { e.stopPropagation(); loadAuthorProfile(ride.pubkey); }} style={{ cursor: 'pointer' }}>
+                        {ride.pubkey.substring(0, 10)}...
+                      </span>
+                    </div>
+                    <div className="ride-time">{formatDistanceToNow(ride.time * 1000, { addSuffix: true })}</div>
+                  </div>
+                  {ride.description && (
+                    <div style={{ fontSize: '13px', color: '#ddd', marginBottom: '12px', lineHeight: 1.4 }}>
+                      {ride.description}
+                    </div>
+                  )}
+                  <div className="ride-stats">
+                    <div className="stat-item">
+                      <Route size={14} className="icon" /> {ride.distance} mi
+                    </div>
+                    <div className="stat-item">
+                      <Clock size={14} className="icon" /> {ride.duration}
+                    </div>
+                    {isNWCConnected && (
+                      <button
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          if (zappingEventId) return;
+                          setZappingEventId(ride.id);
+                          try {
+                            await zapRideEvent(ride.id, ride.hexPubkey, ride.kind, 21, "Great ride!");
+                            alert("Successfully sent 21 sats!");
+                          } catch (e: any) {
+                            alert("Zap failed: " + (e.message || "Unknown error"));
+                          }
+                          setZappingEventId(null);
+                        }}
+                        className="stat-item"
+                        style={{ background: 'rgba(234, 179, 8, 0.1)', border: '1px solid rgba(234, 179, 8, 0.3)', color: '#eab308', marginLeft: 'auto', borderRadius: '12px', padding: '2px 8px', cursor: 'pointer' }}
+                        title="Zap Rider 21 Sats"
+                      >
+                        <Zap size={12} fill={zappingEventId === ride.id ? "#eab308" : "none"} /> 21
+                      </button>
                     )}
                   </div>
                 </div>
-              </div>
-            )
-          }
+              ))}
+            </div>
+          </div>
+        </aside>
+        {/* Map View */}
+        <section className="map-wrapper animate-fade-in" style={{ animationDelay: '0.3s' }}>
+          <MapContainer center={[51.505, -0.09]} zoom={13} scrollWheelZoom={true} zoomControl={false}>
+            {/* Dark Mode Tiles - CartoDB Dark Matter */}
+            <TileLayer
+              attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
+              url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+            />
 
-          {/* Direct Messaging Overlay */}
-          {
-            activeDMUser && (
-              <div className="modal-overlay">
-                <div className="modal-content animate-fade-in glass-panel" style={{ width: '90%', maxWidth: '500px', display: 'flex', flexDirection: 'column' }}>
-                  <div className="modal-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '20px', borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
-                    <h2 style={{ margin: 0, color: '#00ccff', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      Chat with {activeDMUser.substring(0, 8)}...
-                    </h2>
-                    <button onClick={() => setActiveDMUser(null)} className="btn btn-surface" style={{ padding: '8px' }}>
-                      <X size={24} />
-                    </button>
-                  </div>
+            {(viewMode === 'personal' ? myRides : rides).map(ride => {
+              if (ride.route.length === 0) return null;
 
-                  <div className="modal-comments" style={{ padding: '20px', background: 'rgba(255,255,255,0.02)' }}>
-                    <div style={{ height: '300px', overflowY: 'auto', marginBottom: '16px', display: 'flex', flexDirection: 'column', gap: '12px', paddingRight: '8px' }}>
-                      {dmMessages.length === 0 ? (
-                        <div style={{ color: '#666', fontSize: '14px', fontStyle: 'italic', textAlign: 'center', marginTop: '20px' }}>No messages found. Say Hello!</div>
-                      ) : (
-                        dmMessages.map(msg => {
-                          const isMe = msg.sender === user?.pubkey;
-                          return (
-                            <div key={msg.id} style={{
-                              maxWidth: '80%',
-                              alignSelf: isMe ? 'flex-end' : 'flex-start',
-                              background: isMe ? 'rgba(0, 204, 255, 0.2)' : 'rgba(255, 255, 255, 0.1)',
-                              padding: '12px',
-                              borderRadius: '12px',
-                              borderBottomRightRadius: isMe ? '2px' : '12px',
-                              borderBottomLeftRadius: isMe ? '12px' : '2px',
-                            }}>
-                              <div style={{ color: '#fff', fontSize: '14px', lineHeight: '1.4' }}>{msg.text}</div>
-                              <div style={{ color: 'rgba(255,255,255,0.4)', fontSize: '10px', marginTop: '4px', textAlign: isMe ? 'right' : 'left' }}>
-                                {formatDistanceToNow(msg.createdAt * 1000, { addSuffix: true })}
-                              </div>
-                            </div>
-                          );
-                        })
-                      )}
-                    </div>
+              const startCoords: [number, number] = [ride.route[0][0], ride.route[0][1]];
 
-                    <div style={{ display: 'flex', gap: '8px' }}>
-                      <input
-                        type="text"
-                        value={newDMText}
-                        onChange={(e) => setNewDMText(e.target.value)}
-                        placeholder="Type a message..."
-                        disabled={isSendingDM}
-                        style={{ flex: 1, padding: '12px', borderRadius: '8px', background: 'rgba(255,255,255,0.1)', border: '1px solid rgba(255,255,255,0.2)', color: '#fff' }}
-                        onKeyDown={async (e) => {
-                          if (e.key === 'Enter' && !isSendingDM && newDMText.trim()) {
-                            setIsSendingDM(true);
-                            const success = await sendDM(activeDMUser, newDMText.trim());
-                            if (success) {
-                              setNewDMText('');
-                              fetchDMs(activeDMUser).then(setDmMessages);
-                            } else {
-                              alert("Failed to send message. Make sure your NIP-07 extension supports NIP-04 encryption.");
-                            }
-                            setIsSendingDM(false);
-                          }
-                        }}
-                      />
-                      <button
-                        className="btn btn-primary"
-                        style={{ background: '#00ccff', color: '#000', fontWeight: 'bold' }}
-                        disabled={isSendingDM || !newDMText.trim()}
-                        onClick={async () => {
-                          if (!newDMText.trim()) return;
-                          setIsSendingDM(true);
-                          const success = await sendDM(activeDMUser, newDMText.trim());
-                          if (success) {
-                            setNewDMText('');
-                            fetchDMs(activeDMUser).then(setDmMessages);
-                          } else {
-                            alert("Failed to send message.");
-                          }
-                          setIsSendingDM(false);
-                        }}
-                      >
-                        SEND
-                      </button>
-                    </div>
+              return (
+                <div key={ride.id}>
+                  <CircleMarker
+                    center={startCoords}
+                    radius={6}
+                    pathOptions={{
+                      color: 'var(--accent-primary)',
+                      fillColor: 'var(--accent-primary)',
+                      fillOpacity: 0.8,
+                      weight: 2
+                    }}
+                    eventHandlers={{
+                      click: () => setSelectedRide(ride)
+                    }}
+                  >
+                    <Popup>
+                      <div style={{ color: '#000', fontSize: '13px' }}>
+                        <strong>{ride.pubkey.substring(0, 12)}...</strong><br />
+                        {ride.distance} mi in {ride.duration}
+                      </div>
+                    </Popup>
+                  </CircleMarker>
+                  <Polyline
+                    positions={ride.route as [number, number][]}
+                    pathOptions={{ color: 'var(--accent-primary)', weight: 3, opacity: 0.6 }}
+                    eventHandlers={{
+                      click: () => setSelectedRide(ride)
+                    }}
+                  />
+                </div>
+              );
+            })}
+          </MapContainer>
+        </section >
+      </main>
+
+      {/* Ride Detail Modal */}
+      {
+        selectedRide && (
+          <div className="modal-overlay">
+            <div className="modal-content animate-fade-in glass-panel" style={{ width: '80%', maxWidth: '900px', height: '80vh', display: 'flex', flexDirection: 'column' }}>
+              <div className="modal-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '20px', borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
+                <div>
+                  <h2 style={{ margin: 0, color: '#00ffaa' }}>Ride Details</h2>
+                  <div style={{ color: '#888', fontSize: '14px', marginTop: '4px' }}>
+                    {formatDistanceToNow(selectedRide.time * 1000, { addSuffix: true })} by
+                    <span
+                      style={{ color: '#00ffaa', cursor: 'pointer', marginLeft: '4px', textDecoration: 'underline' }}
+                      onClick={() => loadAuthorProfile(selectedRide.pubkey)}
+                    >
+                      {selectedRide.pubkey.substring(0, 16)}...
+                    </span>
                   </div>
                 </div>
+                <button onClick={() => setSelectedRide(null)} className="btn btn-surface" style={{ padding: '8px' }}>
+                  <X size={24} />
+                </button>
               </div>
-            )
-          }
-          {/* NWC Settings Modal */}
-          {
-            showNWCModal && (
-              <div className="modal-overlay">
-                <div className="modal-content animate-fade-in glass-panel" style={{ width: '90%', maxWidth: '500px', display: 'flex', flexDirection: 'column' }}>
-                  <div className="modal-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '20px', borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
-                    <h2 style={{ margin: 0, color: '#eab308', display: 'flex', alignItems: 'center', gap: '8px' }}><Zap size={24} /> Wallet Connect</h2>
-                    <button onClick={() => setShowNWCModal(false)} className="btn btn-surface" style={{ padding: '8px' }}>
-                      <X size={24} />
-                    </button>
+
+              <div className="modal-stats" style={{ display: 'flex', padding: '20px', gap: '40px', background: 'rgba(0,0,0,0.3)' }}>
+                <div className="stat-box">
+                  <div className="stat-value">{selectedRide.distance}</div>
+                  <div className="stat-label">MILES</div>
+                </div>
+                <div className="stat-box">
+                  <div className="stat-value">{selectedRide.duration}</div>
+                  <div className="stat-label">TIME</div>
+                </div>
+              </div>
+
+              <div className="modal-map" style={{ flex: 1, position: 'relative' }}>
+                {selectedRide.route.length > 0 ? (
+                  <MapContainer
+                    center={[selectedRide.route[0][0], selectedRide.route[0][1]]}
+                    zoom={14}
+                    style={{ height: '100%', width: '100%' }}
+                  >
+                    <TileLayer
+                      url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+                    />
+                    <Polyline
+                      positions={selectedRide.route as [number, number][]}
+                      pathOptions={{ color: '#00ffaa', weight: 4, opacity: 0.8 }}
+                    />
+                    <CircleMarker center={[selectedRide.route[0][0], selectedRide.route[0][1]]} radius={6} pathOptions={{ color: '#00ffaa', fillOpacity: 1 }} />
+                    <CircleMarker center={[selectedRide.route[selectedRide.route.length - 1][0], selectedRide.route[selectedRide.route.length - 1][1]]} radius={6} pathOptions={{ color: '#ff4d4f', fillOpacity: 1 }} />
+                    <SetMapBounds route={selectedRide.route} />
+                  </MapContainer>
+                ) : (
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#888' }}>
+                    No route data published for this ride.
                   </div>
-                  <div style={{ padding: '20px' }}>
-                    <p style={{ color: '#ccc', marginBottom: '16px', lineHeight: 1.5 }}>
-                      Connect your Lightning Wallet using <strong>NWC (NIP-47)</strong> to instantly send Zaps to ride organizers and fellow cyclists. Give it a try with Alby or Mutiny Wallet!
-                    </p>
+                )}
+              </div>
+
+              <div className="modal-comments" style={{ padding: '20px', background: 'rgba(255,255,255,0.02)', borderTop: '1px solid rgba(255,255,255,0.1)' }}>
+                <h3 style={{ margin: '0 0 16px', color: '#fff', fontSize: '16px' }}>Discussion</h3>
+                <div style={{ maxHeight: '180px', overflowY: 'auto', marginBottom: '16px', display: 'flex', flexDirection: 'column', gap: '12px', paddingRight: '8px' }}>
+                  {comments.length === 0 ? (
+                    <div style={{ color: '#666', fontSize: '14px', fontStyle: 'italic' }}>No comments yet. Be the first!</div>
+                  ) : (
+                    comments.map(c => (
+                      <div key={c.id} style={{ background: 'rgba(0,0,0,0.3)', padding: '12px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+                          <span style={{ color: '#00ffaa', fontSize: '12px', fontWeight: 'bold' }}>{c.pubkey.substring(0, 10)}...</span>
+                          <span style={{ color: '#888', fontSize: '12px' }}>{formatDistanceToNow(c.createdAt * 1000, { addSuffix: true })}</span>
+                        </div>
+                        <div style={{ color: '#eee', fontSize: '14px', lineHeight: '1.4' }}>{c.content}</div>
+                      </div>
+                    ))
+                  )}
+                </div>
+                {user ? (
+                  <div style={{ display: 'flex', gap: '12px' }}>
                     <input
-                      type="password"
-                      placeholder="nostr+walletconnect://..."
-                      value={nwcURI}
-                      onChange={(e) => setNwcURI(e.target.value)}
-                      style={{ width: '100%', padding: '12px', borderRadius: '8px', background: 'rgba(255,255,255,0.1)', border: '1px solid rgba(255,255,255,0.2)', color: '#fff', marginBottom: '16px' }}
+                      type="text"
+                      value={newComment}
+                      onChange={(e) => setNewComment(e.target.value)}
+                      placeholder="Write a comment..."
+                      disabled={isPublishingComment}
+                      style={{ flex: 1, padding: '12px', borderRadius: '8px', background: 'rgba(255,255,255,0.1)', border: '1px solid rgba(255,255,255,0.2)', color: '#fff' }}
+                      onKeyDown={async (e) => {
+                        if (e.key === 'Enter' && !isPublishingComment && newComment.trim() && selectedRide) {
+                          setIsPublishingComment(true);
+                          const success = await publishComment(selectedRide.id, newComment.trim());
+                          if (success) {
+                            setNewComment('');
+                            fetchComments(selectedRide.id).then(setComments);
+                          } else {
+                            alert("Failed to publish comment.");
+                          }
+                          setIsPublishingComment(false);
+                        }
+                      }}
                     />
                     <button
                       className="btn btn-primary"
-                      style={{ width: '100%', background: '#eab308', color: '#000', fontWeight: 'bold' }}
+                      disabled={isPublishingComment || !newComment.trim()}
                       onClick={async () => {
-                        if (!nwcURI) return;
-                        const success = await connectNWC(nwcURI);
+                        if (!newComment.trim() || !selectedRide) return;
+                        setIsPublishingComment(true);
+                        const success = await publishComment(selectedRide.id, newComment.trim());
                         if (success) {
-                          localStorage.setItem('bikel_nwc_uri', nwcURI);
-                          setIsNWCConnected(true);
-                          setShowNWCModal(false);
-                          // alert("Lightning Wallet connected successfully!"); // Removed to be less disruptive
+                          setNewComment('');
+                          fetchComments(selectedRide.id).then(setComments);
                         } else {
-                          alert("Failed to connect wallet. Check the URI and try again.");
+                          alert("Failed to publish comment.");
                         }
+                        setIsPublishingComment(false);
                       }}
                     >
-                      Connect Wallet
+                      {isPublishingComment ? 'Posting...' : 'Post'}
                     </button>
-                    {isNWCConnected && (
-                      <button
-                        className="btn btn-surface"
-                        style={{ width: '100%', marginTop: '12px', color: '#ff4d4f' }}
-                        onClick={() => {
-                          localStorage.removeItem('bikel_nwc_uri');
-                          setNwcURI('');
-                          setIsNWCConnected(false);
-                          setShowNWCModal(false);
-                        }}
-                      >
-                        Disconnect Wallet
-                      </button>
-                    )}
                   </div>
+                ) : (
+                  <div style={{ color: '#888', fontSize: '14px' }}>Sign in to connect wallet or see balance.</div>
+                )}
+              </div>
+            </div>
+          </div>
+        )
+      }
+
+      {/* Direct Messaging Overlay */}
+      {
+        activeDMUser && (
+          <div className="modal-overlay">
+            <div className="modal-content animate-fade-in glass-panel" style={{ width: '90%', maxWidth: '500px', display: 'flex', flexDirection: 'column' }}>
+              <div className="modal-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '20px', borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
+                <h2 style={{ margin: 0, color: '#00ccff', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  Chat with {activeDMUser.substring(0, 8)}...
+                </h2>
+                <button onClick={() => setActiveDMUser(null)} className="btn btn-surface" style={{ padding: '8px' }}>
+                  <X size={24} />
+                </button>
+              </div>
+
+              <div className="modal-comments" style={{ padding: '20px', background: 'rgba(255,255,255,0.02)' }}>
+                <div style={{ height: '300px', overflowY: 'auto', marginBottom: '16px', display: 'flex', flexDirection: 'column', gap: '12px', paddingRight: '8px' }}>
+                  {dmMessages.length === 0 ? (
+                    <div style={{ color: '#666', fontSize: '14px', fontStyle: 'italic', textAlign: 'center', marginTop: '20px' }}>No messages found. Say Hello!</div>
+                  ) : (
+                    dmMessages.map(msg => {
+                      const isMe = msg.sender === user?.pubkey;
+                      return (
+                        <div key={msg.id} style={{
+                          maxWidth: '80%',
+                          alignSelf: isMe ? 'flex-end' : 'flex-start',
+                          background: isMe ? 'rgba(0, 204, 255, 0.2)' : 'rgba(255, 255, 255, 0.1)',
+                          padding: '12px',
+                          borderRadius: '12px',
+                          borderBottomRightRadius: isMe ? '2px' : '12px',
+                          borderBottomLeftRadius: isMe ? '12px' : '2px',
+                        }}>
+                          <div style={{ color: '#fff', fontSize: '14px', lineHeight: '1.4' }}>{msg.text}</div>
+                          <div style={{ color: 'rgba(255,255,255,0.4)', fontSize: '10px', marginTop: '4px', textAlign: isMe ? 'right' : 'left' }}>
+                            {formatDistanceToNow(msg.createdAt * 1000, { addSuffix: true })}
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <input
+                    type="text"
+                    value={newDMText}
+                    onChange={(e) => setNewDMText(e.target.value)}
+                    placeholder="Type a message..."
+                    disabled={isSendingDM}
+                    style={{ flex: 1, padding: '12px', borderRadius: '8px', background: 'rgba(255,255,255,0.1)', border: '1px solid rgba(255,255,255,0.2)', color: '#fff' }}
+                    onKeyDown={async (e) => {
+                      if (e.key === 'Enter' && !isSendingDM && newDMText.trim()) {
+                        setIsSendingDM(true);
+                        const success = await sendDM(activeDMUser, newDMText.trim());
+                        if (success) {
+                          setNewDMText('');
+                          fetchDMs(activeDMUser).then(setDmMessages);
+                        } else {
+                          alert("Failed to send message. Make sure your NIP-07 extension supports NIP-04 encryption.");
+                        }
+                        setIsSendingDM(false);
+                      }
+                    }}
+                  />
+                  <button
+                    className="btn btn-primary"
+                    style={{ background: '#00ccff', color: '#000', fontWeight: 'bold' }}
+                    disabled={isSendingDM || !newDMText.trim()}
+                    onClick={async () => {
+                      if (!newDMText.trim()) return;
+                      setIsSendingDM(true);
+                      const success = await sendDM(activeDMUser, newDMText.trim());
+                      if (success) {
+                        setNewDMText('');
+                        fetchDMs(activeDMUser).then(setDmMessages);
+                      } else {
+                        alert("Failed to send message.");
+                      }
+                      setIsSendingDM(false);
+                    }}
+                  >
+                    SEND
+                  </button>
                 </div>
               </div>
-            )
-          }
-
-          {/* About Panel */}
-          <div className={`side-panel ${showAbout ? 'open' : ''}`}>
-            <div className="side-panel-header">
-              <h2 className="side-panel-title"><Info size={24} color="#00ffaa" /> About Bikel</h2>
-              <button className="close-panel-btn" onClick={() => setShowAbout(false)}>
-                <X size={20} />
-              </button>
             </div>
-            <div style={{ color: '#ccc', lineHeight: 1.6 }}>
-              <p style={{ marginBottom: '16px' }}>
-                <strong style={{ color: '#fff' }}>Bikel</strong> is an open, decentralized mapping application built specifically for cyclists utilizing the Nostr network.
-              </p>
-              <p style={{ marginBottom: '16px' }}>
-                Traditional fitness trackers lock your geolocation data into proprietary silos, monetizing your hardware investments against you. Bikel operates via NIP-52 Time-Based Events natively on Nostr, meaning your global ride histories are permanently secured by cryptographic keys you control.
-              </p>
-              <p style={{ marginBottom: '16px' }}>
-                Organize alleycat races, split micropayments over Lightning (NWC), and maintain a truly sovereign, immutable record of every mile ridden.
-              </p>
-              <div style={{ padding: '16px', background: 'rgba(0,255,170,0.1)', border: '1px solid rgba(0,255,170,0.3)', borderRadius: '8px', marginTop: '24px' }}>
-                <h3 style={{ color: '#00ffaa', fontSize: '16px', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <Zap size={16} /> Open Source
-                </h3>
-                <p style={{ fontSize: '14px', margin: 0 }}>
-                  Bikel is entirely open-source software. You are free to audit, clone, and host your own instances of these clients forever.
+          </div>
+        )
+      }
+      {/* NWC Settings Modal */}
+      {
+        showNWCModal && (
+          <div className="modal-overlay">
+            <div className="modal-content animate-fade-in glass-panel" style={{ width: '90%', maxWidth: '500px', display: 'flex', flexDirection: 'column' }}>
+              <div className="modal-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '20px', borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
+                <h2 style={{ margin: 0, color: '#eab308', display: 'flex', alignItems: 'center', gap: '8px' }}><Zap size={24} /> Wallet Connect</h2>
+                <button onClick={() => setShowNWCModal(false)} className="btn btn-surface" style={{ padding: '8px' }}>
+                  <X size={24} />
+                </button>
+              </div>
+              <div style={{ padding: '20px' }}>
+                <p style={{ color: '#ccc', marginBottom: '16px', lineHeight: 1.5 }}>
+                  Connect your Lightning Wallet using <strong>NWC (NIP-47)</strong> to instantly send Zaps to ride organizers and fellow cyclists. Give it a try with Alby or Mutiny Wallet!
                 </p>
+                <input
+                  type="password"
+                  placeholder="nostr+walletconnect://..."
+                  value={nwcURI}
+                  onChange={(e) => setNwcURI(e.target.value)}
+                  style={{ width: '100%', padding: '12px', borderRadius: '8px', background: 'rgba(255,255,255,0.1)', border: '1px solid rgba(255,255,255,0.2)', color: '#fff', marginBottom: '16px' }}
+                />
+                <button
+                  className="btn btn-primary"
+                  style={{ width: '100%', background: '#eab308', color: '#000', fontWeight: 'bold' }}
+                  onClick={async () => {
+                    if (!nwcURI) return;
+                    const success = await connectNWC(nwcURI);
+                    if (success) {
+                      localStorage.setItem('bikel_nwc_uri', nwcURI);
+                      setIsNWCConnected(true);
+                      setShowNWCModal(false);
+                      // alert("Lightning Wallet connected successfully!"); // Removed to be less disruptive
+                    } else {
+                      alert("Failed to connect wallet. Check the URI and try again.");
+                    }
+                  }}
+                >
+                  Connect Wallet
+                </button>
+                {isNWCConnected && (
+                  <button
+                    className="btn btn-surface"
+                    style={{ width: '100%', marginTop: '12px', color: '#ff4d4f' }}
+                    onClick={() => {
+                      localStorage.removeItem('bikel_nwc_uri');
+                      setNwcURI('');
+                      setIsNWCConnected(false);
+                      setShowNWCModal(false);
+                    }}
+                  >
+                    Disconnect Wallet
+                  </button>
+                )}
               </div>
             </div>
           </div>
+        )
+      }
 
-          {/* How To Panel */}
-          <div className={`side-panel ${showHowTo ? 'open' : ''}`}>
-            <div className="side-panel-header">
-              <h2 className="side-panel-title"><HelpCircle size={24} color="#00ffaa" /> How It Works</h2>
-              <button className="close-panel-btn" onClick={() => setShowHowTo(false)}>
-                <X size={20} />
-              </button>
-            </div>
-            <div style={{ color: '#ccc', lineHeight: 1.6 }}>
-              <h3 style={{ color: '#fff', fontSize: '18px', marginBottom: '12px', marginTop: '16px' }}>1. Get a Nostr Key</h3>
-              <p style={{ marginBottom: '24px' }}>
-                To start posting your rides, you'll need a Nostr extension like nos2x or Alby to manage your cryptographic signature. Click "Sign In" at the top right, and Bikel will automatically locate your NIP-07 web extension!
-              </p>
+      {/* About Panel */}
+      <div className={`side-panel ${showAbout ? 'open' : ''}`}>
+        <div className="side-panel-header">
+          <h2 className="side-panel-title"><Info size={24} color="#00ffaa" /> About Bikel</h2>
+          <button className="close-panel-btn" onClick={() => setShowAbout(false)}>
+            <X size={20} />
+          </button>
+        </div>
+        <div style={{ color: '#ccc', lineHeight: 1.6 }}>
+          <p style={{ marginBottom: '16px' }}>
+            <strong style={{ color: '#fff' }}>Bikel</strong> is an open, decentralized mapping application built specifically for cyclists utilizing the Nostr network.
+          </p>
+          <p style={{ marginBottom: '16px' }}>
+            Traditional fitness trackers lock your geolocation data into proprietary silos, monetizing your hardware investments against you. Bikel operates via NIP-52 Time-Based Events natively on Nostr, meaning your global ride histories are permanently secured by cryptographic keys you control.
+          </p>
+          <p style={{ marginBottom: '16px' }}>
+            Organize alleycat races, split micropayments over Lightning (NWC), and maintain a truly sovereign, immutable record of every mile ridden.
+          </p>
+          <div style={{ padding: '16px', background: 'rgba(0,255,170,0.1)', border: '1px solid rgba(0,255,170,0.3)', borderRadius: '8px', marginTop: '24px' }}>
+            <h3 style={{ color: '#00ffaa', fontSize: '16px', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <Zap size={16} /> Open Source
+            </h3>
+            <p style={{ fontSize: '14px', margin: 0 }}>
+              Bikel is entirely open-source software. You are free to audit, clone, and host your own instances of these clients forever.
+            </p>
+          </div>
+        </div>
+      </div>
 
-              <h3 style={{ color: '#fff', fontSize: '18px', marginBottom: '12px' }}>2. Record Your Rides</h3>
-              <p style={{ marginBottom: '24px' }}>
-                While you can view the global web feed here, recording rides happens purely inside the Bikel Mobile App (available on Android). The app acts as an offline-first GPS tracker before compressing your routes into mathematical geometries.
-              </p>
+      {/* How To Panel */}
+      <div className={`side-panel ${showHowTo ? 'open' : ''}`}>
+        <div className="side-panel-header">
+          <h2 className="side-panel-title"><HelpCircle size={24} color="#00ffaa" /> How It Works</h2>
+          <button className="close-panel-btn" onClick={() => setShowHowTo(false)}>
+            <X size={20} />
+          </button>
+        </div>
+        <div style={{ color: '#ccc', lineHeight: 1.6 }}>
+          <h3 style={{ color: '#fff', fontSize: '18px', marginBottom: '12px', marginTop: '16px' }}>1. Get a Nostr Key</h3>
+          <p style={{ marginBottom: '24px' }}>
+            To start posting your rides, you'll need a Nostr extension like nos2x or Alby to manage your cryptographic signature. Click "Sign In" at the top right, and Bikel will automatically locate your NIP-07 web extension!
+          </p>
 
-              <h3 style={{ color: '#fff', fontSize: '18px', marginBottom: '12px' }}>3. Interact & Zap</h3>
-              <p style={{ marginBottom: '24px' }}>
-                Click on any ride on the map to view detailed statistical splits, leave comments, or send entirely fee-less Bitcoin micro-payments (Zaps) to riders you support by binding any NWC-compatible lightning wallet!
-              </p>
+          <h3 style={{ color: '#fff', fontSize: '18px', marginBottom: '12px' }}>2. Record Your Rides</h3>
+          <p style={{ marginBottom: '24px' }}>
+            While you can view the global web feed here, recording rides happens purely inside the Bikel Mobile App (available on Android). The app acts as an offline-first GPS tracker before compressing your routes into mathematical geometries.
+          </p>
+
+          <h3 style={{ color: '#fff', fontSize: '18px', marginBottom: '12px' }}>3. Interact & Zap</h3>
+          <p style={{ marginBottom: '24px' }}>
+            Click on any ride on the map to view detailed statistical splits, leave comments, or send entirely fee-less Bitcoin micro-payments (Zaps) to riders you support by binding any NWC-compatible lightning wallet!
+          </p>
+        </div>
+      </div>
+
+      {/* App Promo Panel */}
+      <div className={`side-panel ${showAppPromo ? 'open' : ''}`}>
+        <div className="side-panel-header">
+          <h2 className="side-panel-title"><Smartphone size={24} color="#00ffaa" /> Get Bikel Mobile</h2>
+          <button className="close-panel-btn" onClick={() => setShowAppPromo(false)}>
+            <X size={20} />
+          </button>
+        </div>
+        <div style={{ color: '#ccc', lineHeight: 1.6, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+
+          <div style={{ width: '100%', aspectRatio: '1', background: 'linear-gradient(135deg, rgba(0,255,170,0.2) 0%, rgba(0,0,0,0.8) 100%)', borderRadius: '16px', border: '1px solid rgba(0,255,170,0.3)', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '24px', overflow: 'hidden', position: 'relative' }}>
+            <MapIcon size={120} color="rgba(0,255,170,0.3)" style={{ position: 'absolute', opacity: 0.5 }} />
+            <div style={{ zIndex: 10, textAlign: 'center', background: 'rgba(0,0,0,0.6)', padding: '16px 24px', borderRadius: '30px', backdropFilter: 'blur(5px)', border: '1px solid rgba(255,255,255,0.1)' }}>
+              <Bike size={32} color="#00ffaa" style={{ margin: '0 auto 8px auto' }} />
+              <div style={{ color: '#fff', fontWeight: 'bold', fontSize: '18px' }}>Tracking Live</div>
+              <div style={{ color: '#00ffaa', fontFamily: 'monospace' }}>12.4 mi • 1:04:22</div>
             </div>
           </div>
 
-          {/* App Promo Panel */}
-          <div className={`side-panel ${showAppPromo ? 'open' : ''}`}>
-            <div className="side-panel-header">
-              <h2 className="side-panel-title"><Smartphone size={24} color="#00ffaa" /> Get Bikel Mobile</h2>
-              <button className="close-panel-btn" onClick={() => setShowAppPromo(false)}>
-                <X size={20} />
-              </button>
-            </div>
-            <div style={{ color: '#ccc', lineHeight: 1.6, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+          <p style={{ textAlign: 'center', fontSize: '16px', marginBottom: '32px' }}>
+            Download the official Android APK to passively record maps, upload photos, trim privacy settings, and broadcast rides securely to any Nostr relay of your choosing!
+          </p>
 
-              <div style={{ width: '100%', aspectRatio: '1', background: 'linear-gradient(135deg, rgba(0,255,170,0.2) 0%, rgba(0,0,0,0.8) 100%)', borderRadius: '16px', border: '1px solid rgba(0,255,170,0.3)', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '24px', overflow: 'hidden', position: 'relative' }}>
-                <MapIcon size={120} color="rgba(0,255,170,0.3)" style={{ position: 'absolute', opacity: 0.5 }} />
-                <div style={{ zIndex: 10, textAlign: 'center', background: 'rgba(0,0,0,0.6)', padding: '16px 24px', borderRadius: '30px', backdropFilter: 'blur(5px)', border: '1px solid rgba(255,255,255,0.1)' }}>
-                  <Bike size={32} color="#00ffaa" style={{ margin: '0 auto 8px auto' }} />
-                  <div style={{ color: '#fff', fontWeight: 'bold', fontSize: '18px' }}>Tracking Live</div>
-                  <div style={{ color: '#00ffaa', fontFamily: 'monospace' }}>12.4 mi • 1:04:22</div>
-                </div>
-              </div>
+          <a
+            href="https://github.com/Mnpezz/bikel/releases/download/v1.0.0/app-release.apk"
+            download
+            className="btn btn-primary"
+            style={{
+              width: '100%',
+              padding: '16px',
+              fontSize: '18px',
+              justifyContent: 'center',
+              background: '#00ffaa',
+              color: '#000',
+              fontWeight: '900',
+              textTransform: 'uppercase',
+              letterSpacing: '1px',
+              boxShadow: '0 0 20px rgba(0,255,170,0.4)'
+            }}
+          >
+            Download Android APK
+          </a>
 
-              <p style={{ textAlign: 'center', fontSize: '16px', marginBottom: '32px' }}>
-                Download the official Android APK to passively record maps, upload photos, trim privacy settings, and broadcast rides securely to any Nostr relay of your choosing!
-              </p>
-
-              <a
-                href="https://github.com/Mnpezz/bikel/releases/download/v1.0.0/app-release.apk"
-                download
-                className="btn btn-primary"
-                style={{
-                  width: '100%',
-                  padding: '16px',
-                  fontSize: '18px',
-                  justifyContent: 'center',
-                  background: '#00ffaa',
-                  color: '#000',
-                  fontWeight: '900',
-                  textTransform: 'uppercase',
-                  letterSpacing: '1px',
-                  boxShadow: '0 0 20px rgba(0,255,170,0.4)'
-                }}
-              >
-                Download Android APK
-              </a>
-
-              <div style={{ marginTop: '24px', fontSize: '12px', color: 'rgba(255,255,255,0.4)', textAlign: 'center' }}>
-                Requires Android 10.0 or higher. Enable "Install Unknown Apps" in settings to sideload the release directly to your device.
-              </div>
-            </div>
+          <div style={{ marginTop: '24px', fontSize: '12px', color: 'rgba(255,255,255,0.4)', textAlign: 'center' }}>
+            Requires Android 10.0 or higher. Enable "Install Unknown Apps" in settings to sideload the release directly to your device.
           </div>
-
-        </div >
-        );
+        </div>
+      </div>
+    </div>
+  );
 }
-
-        // Helper to center the modal map on the specific ride
-        function SetMapBounds({route}: {route: number[][] }) {
+// Helper to center the modal map on the specific ride
+function SetMapBounds({ route }: { route: number[][] }) {
   const map = useMap();
   useEffect(() => {
     if (route.length > 0) {
       const bounds = route.map(p => [p[0], p[1]] as [number, number]);
-        map.fitBounds(bounds, {padding: [20, 20] });
+      map.fitBounds(bounds, { padding: [20, 20] });
     }
   }, [route, map]);
-        return null;
+  return null;
 }
 
-        export default App;
+export default App;

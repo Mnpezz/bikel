@@ -523,26 +523,32 @@ export async function fetchDMs(withPubkey: string): Promise<DMessage[]> {
 
     const currentUser = await ndk.signer.user();
 
-    console.log(`[Nostr] Fetching DMs between ${currentUser.pubkey} and ${withPubkey}...`);
+    let hexPubkey = withPubkey;
+    let otherUser = ndk.getUser({ pubkey: withPubkey });
+
+    if (withPubkey.startsWith('npub1')) {
+        otherUser = ndk.getUser({ npub: withPubkey });
+        hexPubkey = otherUser.pubkey;
+    }
+
+    console.log(`[Nostr] Fetching DMs between ${currentUser.pubkey} and ${hexPubkey}...`);
 
     // Filter messages sent from us to them OR from them to us
     const filterSent: NDKFilter = {
         kinds: [4],
         authors: [currentUser.pubkey],
-        "#p": [withPubkey],
+        "#p": [hexPubkey],
         limit: 50,
     };
     const filterReceived: NDKFilter = {
         kinds: [4],
-        authors: [withPubkey],
+        authors: [hexPubkey],
         "#p": [currentUser.pubkey],
         limit: 50,
     };
 
     const events = await ndk.fetchEvents([filterSent, filterReceived]);
     const messages: DMessage[] = [];
-
-    const otherUser = ndk.getUser({ pubkey: withPubkey });
 
     for (const event of events) {
         try {
@@ -566,12 +572,18 @@ export async function sendDM(toPubkey: string, text: string): Promise<boolean> {
     const ndk = await connectNDK();
     if (!ndk.signer) throw new Error("Must be signed in to send DMs");
 
-    const recipient = ndk.getUser({ pubkey: toPubkey });
+    let hexPubkey = toPubkey;
+    let recipient = ndk.getUser({ pubkey: toPubkey });
+
+    if (toPubkey.startsWith('npub1')) {
+        recipient = ndk.getUser({ npub: toPubkey });
+        hexPubkey = recipient.pubkey;
+    }
 
     const event = new NDKEvent(ndk);
     event.kind = 4; // NIP-04 Direct Message
     event.content = text;
-    event.tags = [['p', toPubkey]];
+    event.tags = [['p', hexPubkey]];
 
     console.log('[Nostr] Encrypting and publishing DM...');
     try {
