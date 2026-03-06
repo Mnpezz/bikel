@@ -19,6 +19,12 @@
   z-index: 1000;
 }
 
+.header-actions {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
 .logo {
   font-weight: 800;
   font-size: 1.5rem;
@@ -223,4 +229,68 @@
 
 .modal-map .leaflet-container {
   background: #0d0f12;
+}
+
+/* --- Mobile Responsiveness --- */
+@media (max-width: 768px) {
+  .logo {
+    font-size: 1.2rem;
+  }
+
+  /* Wrap Header Actions gracefully */
+  .header-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    justify-content: flex-end;
+  }
+
+  .header-actions button {
+    padding: 8px 12px;
+    font-size: 0.85rem;
+  }
+
+  .header-actions .btn span {
+    display: none;
+    /* Hide text, only show icons on Mobile */
+  }
+
+  /* Collapse Grid */
+  .main-content {
+    grid-template-columns: 1fr;
+    position: relative;
+  }
+
+  /* Float Sidebar entirely */
+  .sidebar {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    width: 100%;
+    height: 40vh;
+    /* Takes up bottom 40% of the screen */
+    border-right: none;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+    background: rgba(22, 26, 31, 0.85);
+    /* Semi-transparent */
+    backdrop-filter: blur(15px);
+    -webkit-backdrop-filter: blur(15px);
+    border-radius: 24px 24px 0 0;
+    z-index: 1000;
+  }
+
+  .map-wrapper {
+    height: 100vh;
+    /* Map commands full screen under the floated sidebar */
+  }
+
+  /* Compress Stats Grid */
+  .global-stats {
+    grid-template-columns: 1fr;
+  }
+
+  /* Ensure map pins don't get hidden under the floating sidebar */
+  .map-wrapper .leaflet-container {
+    padding-bottom: 40vh;
+  }
 }

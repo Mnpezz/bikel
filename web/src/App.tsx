@@ -146,7 +146,7 @@ function App() {
           {isConnected ? 'Connected to Relays' : 'Connecting...'}
         </div>
 
-        <div className="header-actions" style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+        <div className="header-actions">
           <button
             className="btn btn-surface"
             style={{ padding: '8px', color: viewMode === 'global' ? '#00ffaa' : '#555' }}
@@ -818,7 +818,7 @@ function App() {
           </p>
 
           <a
-            href="https://github.com/mnpezz/bikel/raw/main/apk/android/app/build/outputs/apk/release/app-release.apk"
+            href="https://github.com/Mnpezz/bikel/releases/download/v1.0.0/app-release.apk"
             download
             className="btn btn-primary"
             style={{
