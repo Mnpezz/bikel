@@ -419,9 +419,13 @@ function App() {
                                 <Zap size={14} fill={zappingEventId === event.id ? "#eab308" : "none"} /> 21
                               </button>
                             )}
-                            <a href={`nostr:${event.pubkey}`} onClick={(e) => e.stopPropagation()} style={{ color: '#00ccff', textDecoration: 'underline' }}>
+                            <button
+                              className="btn btn-primary"
+                              style={{ padding: '6px 12px', fontSize: '13px', background: '#00ccff', color: '#000', fontWeight: 'bold' }}
+                              onClick={() => setActiveDMUser(event.pubkey)}
+                            >
                               Message Organizer
-                            </a>
+                            </button>
                           </div>
                         </div>
                       </div>
