@@ -1665,7 +1665,17 @@ export default function App() {
                 comments.map(c => (
                   <View key={c.id} style={[styles.historyCard, { backgroundColor: 'rgba(0,0,0,0.3)', borderColor: 'rgba(255,255,255,0.05)' }]}>
                     <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 }}>
-                      <Text style={{ color: '#00ffaa', fontSize: 12, fontWeight: 'bold' }}>{c.pubkey.substring(0, 10)}...</Text>
+                      <TouchableOpacity onPress={() => {
+                        const targetKey = c.hexPubkey || c.pubkey;
+                        setShowDiscussion(false);
+                        setViewingAuthor(targetKey);
+                        setIsLoadingAuthor(true);
+                        fetchUserRides(targetKey).then(setAuthorRides).finally(() => setIsLoadingAuthor(false));
+                      }}>
+                        <Text style={{ color: '#00ffaa', fontSize: 12, fontWeight: 'bold', textDecorationLine: 'underline' }}>
+                          {profiles[c.hexPubkey || c.pubkey]?.nip05 || profiles[c.hexPubkey || c.pubkey]?.name || (c.hexPubkey || c.pubkey).substring(0, 10) + '...'}
+                        </Text>
+                      </TouchableOpacity>
                       <Text style={{ color: '#888', fontSize: 12 }}>
                         {new Date(c.createdAt * 1000).toLocaleDateString()}
                       </Text>
@@ -1713,7 +1723,7 @@ export default function App() {
           <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={[styles.historyOverlay, { zIndex: 1000 }]}>
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
               <Text style={styles.historyTitle}>
-                Chat with {activeDMUser.substring(0, 8)}...
+                Chat with {profiles[activeDMUser]?.nip05 || profiles[activeDMUser]?.name || activeDMUser.substring(0, 10)}...
               </Text>
               <TouchableOpacity onPress={() => setActiveDMUser(null)} style={{ padding: 4 }}>
                 <X size={24} color="#fff" />
