@@ -3,6 +3,7 @@ import axios from 'axios';
 import cron from 'node-cron';
 import dotenv from 'dotenv';
 import WebSocket from "ws";
+global.WebSocket = WebSocket;
 
 dotenv.config();
 
@@ -17,7 +18,7 @@ const COINOS_API_KEY = process.env.COINOS_API_KEY;
 const BOT_NSEC = process.env.BOT_NSEC;
 
 // Example split for top 3 (1 = 60%, 2 = 30%, 3 = 10%)
-const PAYOUT_SPLITS = [0.60, 0.30, 0.10];
+const PAYOUT_SPLITS = [0.50, 0.30, 0.20];
 
 async function initializeNDK() {
     let signer;
@@ -58,9 +59,8 @@ async function payLightningInvoice(invoice) {
 async function processFinishedContests() {
     console.log('[Bot] Running finished contest aggregator...');
 
-    const ndk = await initializeNDK();
-
     try {
+        const ndk = await initializeNDK();
         const now = Math.floor(Date.now() / 1000);
         const yesterday = now - (24 * 60 * 60);
 
@@ -257,7 +257,15 @@ async function processFinishedContests() {
 
 // Run the script immediately for testing if called directly
 if (process.argv.includes('--run-now')) {
-    processFinishedContests();
+    processFinishedContests()
+        .then(() => {
+            console.log('[Bot] Exiting cleanly after one-off execution.');
+            process.exit(0);
+        })
+        .catch(e => {
+            console.error('[Bot] Fatal execution error:', e);
+            process.exit(1);
+        });
 } else {
     // Schedule to run every hour to check for finished contests
     console.log('[Bot] Scheduled cron job for contest payouts. Waiting for trigger...');
