@@ -179,7 +179,7 @@ function App() {
       <header className="header animate-fade-in">
         <div className="logo">
           <Bike size={28} color="var(--accent-primary)" strokeWidth={2.5} />
-          Bikel<span>.</span>
+          Bikel<span>.</span>ink
         </div>
 
         <div className="relay-status">
@@ -609,7 +609,7 @@ function App() {
                 </button>
               </div>
 
-              {selectedRide.image && selectedRide.image !== 'https://bikel.com/bikelLogo.jpg' && selectedRide.image !== '/bikelLogo.jpg' && (
+              {selectedRide.image && selectedRide.image !== 'https://bikel.ink/bikelLogo.jpg' && selectedRide.image !== '/bikelLogo.jpg' && (
                 <div style={{ padding: '20px 20px 0' }}>
                   <img src={selectedRide.image} alt="Ride Media" style={{ width: '100%', height: '200px', objectFit: 'cover', borderRadius: '8px' }} />
                 </div>

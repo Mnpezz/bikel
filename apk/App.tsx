@@ -517,7 +517,7 @@ export default function App() {
               />
               <TextInput
                 style={[styles.keyInput, { marginBottom: 8 }]}
-                placeholder="NIP-05 (e.g., alice@domain.com)"
+                placeholder="NIP-05 (e.g., alice@bikel.ink)"
                 placeholderTextColor="rgba(255,255,255,0.3)"
                 value={editNip05}
                 onChangeText={setEditNip05}
@@ -653,83 +653,107 @@ export default function App() {
                 {activeContests.length === 0 ? (
                   <Text style={styles.emptyText}>No active contests. Create one!</Text>
                 ) : (
-                  activeContests.map(c => {
-                    const isGlobal = c.invitedPubkeys.length === 0;
-                    return (
-                      <View key={c.id} style={[styles.historyCard, { borderColor: '#eab308', borderWidth: 1 }]}>
-                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-                          <Text style={{ color: '#eab308', fontWeight: 'bold', fontSize: 16 }}>🏆 {c.name}</Text>
-                          <Text style={{ color: isGlobal ? '#00ccff' : '#ff4d4f', fontSize: 10, fontWeight: 'bold', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 10, borderWidth: 1, borderColor: isGlobal ? '#00ccff' : '#ff4d4f' }}>
-                            {isGlobal ? 'GLOBAL' : 'PRIVATE'}
-                          </Text>
-                        </View>
-                        <Text style={{ color: '#aaa', fontSize: 12, marginBottom: 8 }}>
-                          Ends: {new Date(c.endTime * 1000).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}
-                        </Text>
-                        <Text style={{ color: '#fff', fontSize: 13, marginBottom: 8 }}>{c.description}</Text>
+                  (() => {
+                    const nowSeconds = Math.floor(Date.now() / 1000);
+                    const upcomingContests = activeContests.filter(c => c.endTime >= nowSeconds).sort((a, b) => a.endTime - b.endTime);
+                    const pastContests = activeContests.filter(c => c.endTime < nowSeconds).sort((a, b) => b.endTime - a.endTime);
 
-                        <View style={{ flexDirection: 'row', gap: 10, marginBottom: 12 }}>
-                          <View style={{ backgroundColor: 'rgba(255,255,255,0.05)', padding: 8, borderRadius: 6, flex: 1, alignItems: 'center' }}>
-                            <Text style={{ color: '#9ba1a6', fontSize: 10, fontWeight: 'bold' }}>METRIC</Text>
-                            <Text style={{ color: '#fff', fontSize: 12 }}>{c.parameter.replace('max_', '').toUpperCase()}</Text>
-                          </View>
-                          <View style={{ backgroundColor: 'rgba(255,255,255,0.05)', padding: 8, borderRadius: 6, flex: 1, alignItems: 'center' }}>
-                            <Text style={{ color: '#9ba1a6', fontSize: 10, fontWeight: 'bold' }}>ENTRY FEE</Text>
-                            <Text style={{ color: '#eab308', fontSize: 12, fontWeight: 'bold' }}>{c.feeSats} sats</Text>
-                          </View>
-                        </View>
-
-                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <TouchableOpacity onPress={async () => {
-                            setSelectedContest(c);
-                            setShowFeed(false);
-                            setIsLoadingLeaderboard(true);
-                            const lb = await fetchRideLeaderboard(c.attendees, c.startTime, c.endTime, c.parameter);
-                            setContestLeaderboard(lb);
-                            setIsLoadingLeaderboard(false);
-                          }}>
-                            <Text style={{ color: '#00ccff', fontSize: 12, textDecorationLine: 'underline' }}>View Leaderboard ({c.attendees.length} Joined)</Text>
-                          </TouchableOpacity>
-                          <TouchableOpacity
-                            style={{ backgroundColor: c.attendees.includes(currentHex) ? 'rgba(234, 179, 8, 0.2)' : '#eab308', paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20, flexDirection: 'row', alignItems: 'center', gap: 4 }}
-                            disabled={c.attendees.includes(currentHex)}
-                            onPress={async () => {
-                              if (!isNWCConnected && c.feeSats > 0) {
-                                Alert.alert("Wallet Required", "You must connect your Lightning Wallet in Settings to pay the entry fee.");
-                                return;
-                              }
-
-                              try {
-                                if (c.feeSats > 0) {
-                                  await zapRideEvent(c.id, ESCROW_PUBKEY, c.kind, Math.floor(c.feeSats), "Contest Entry Fee");
-                                  Alert.alert("Payment Verified", `Joined contest for ${c.feeSats} sats!`);
-                                }
-                                const joined = await publishRSVP(c);
-                                if (joined) {
-                                  Alert.alert("Success", "You are entered into the contest!");
-                                  // Optimistic UI update
-                                  setActiveContests(prev => prev.map(contest =>
-                                    contest.id === c.id
-                                      ? { ...contest, attendees: [...contest.attendees, currentHex] }
-                                      : contest
-                                  ));
-                                  const newContests = await fetchContests();
-                                  setActiveContests(newContests);
-                                }
-                              } catch (e: any) {
-                                Alert.alert("Error", e.message || "Failed to enter contest");
-                              }
-                            }}
-                          >
-                            <Zap size={14} color={c.attendees.includes(currentHex) ? "#eab308" : "#000"} />
-                            <Text style={{ color: c.attendees.includes(currentHex) ? '#eab308' : '#000', fontWeight: 'bold' }}>
-                              {c.attendees.includes(currentHex) ? 'ENTERED' : 'ENTER CONTEST'}
+                    const renderContest = (c: ContestEvent, isPast: boolean) => {
+                      const isGlobal = c.invitedPubkeys.length === 0;
+                      return (
+                        <View key={c.id} style={[styles.historyCard, { borderColor: isPast ? '#555' : '#eab308', borderWidth: 1, opacity: isPast ? 0.6 : 1 }]}>
+                          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                            <Text style={{ color: isPast ? '#888' : '#eab308', fontWeight: 'bold', fontSize: 16 }}>🏆 {c.name}</Text>
+                            <Text style={{ color: isGlobal ? '#00ccff' : '#ff4d4f', fontSize: 10, fontWeight: 'bold', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 10, borderWidth: 1, borderColor: isGlobal ? '#00ccff' : '#ff4d4f' }}>
+                              {isGlobal ? 'GLOBAL' : 'PRIVATE'}
                             </Text>
-                          </TouchableOpacity>
+                          </View>
+                          <Text style={{ color: '#aaa', fontSize: 12, marginBottom: 8 }}>
+                            Ends: {new Date(c.endTime * 1000).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}
+                          </Text>
+                          <Text style={{ color: '#fff', fontSize: 13, marginBottom: 8 }}>{c.description}</Text>
+
+                          <View style={{ flexDirection: 'row', gap: 10, marginBottom: 12 }}>
+                            <View style={{ backgroundColor: 'rgba(255,255,255,0.05)', padding: 8, borderRadius: 6, flex: 1, alignItems: 'center' }}>
+                              <Text style={{ color: '#9ba1a6', fontSize: 10, fontWeight: 'bold' }}>METRIC</Text>
+                              <Text style={{ color: '#fff', fontSize: 12 }}>{c.parameter.replace('max_', '').toUpperCase()}</Text>
+                            </View>
+                            <View style={{ backgroundColor: 'rgba(255,255,255,0.05)', padding: 8, borderRadius: 6, flex: 1, alignItems: 'center' }}>
+                              <Text style={{ color: '#9ba1a6', fontSize: 10, fontWeight: 'bold' }}>ENTRY FEE</Text>
+                              <Text style={{ color: isPast ? '#888' : '#eab308', fontSize: 12, fontWeight: 'bold' }}>{c.feeSats} sats</Text>
+                            </View>
+                          </View>
+
+                          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <TouchableOpacity onPress={async () => {
+                              setSelectedContest(c);
+                              setShowFeed(false);
+                              setIsLoadingLeaderboard(true);
+                              const lb = await fetchRideLeaderboard(c.attendees, c.startTime, c.endTime, c.parameter);
+                              setContestLeaderboard(lb);
+                              setIsLoadingLeaderboard(false);
+                            }}>
+                              <Text style={{ color: '#00ccff', fontSize: 12, textDecorationLine: 'underline' }}>View Leaderboard ({c.attendees.length} Joined)</Text>
+                            </TouchableOpacity>
+
+                            {!isPast && (
+                              <TouchableOpacity
+                                style={{ backgroundColor: c.attendees.includes(currentHex) ? 'rgba(234, 179, 8, 0.2)' : '#eab308', paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20, flexDirection: 'row', alignItems: 'center', gap: 4 }}
+                                disabled={c.attendees.includes(currentHex)}
+                                onPress={async () => {
+                                  if (!isNWCConnected && c.feeSats > 0) {
+                                    Alert.alert("Wallet Required", "You must connect your Lightning Wallet in Settings to pay the entry fee.");
+                                    return;
+                                  }
+
+                                  try {
+                                    if (c.feeSats > 0) {
+                                      await zapRideEvent(c.id, ESCROW_PUBKEY, c.kind, Math.floor(c.feeSats), "Contest Entry Fee");
+                                      Alert.alert("Payment Verified", `Joined contest for ${c.feeSats} sats!`);
+                                    }
+                                    const joined = await publishRSVP(c);
+                                    if (joined) {
+                                      Alert.alert("Success", "You are entered into the contest!");
+                                      // Optimistic UI update
+                                      setActiveContests(prev => prev.map(contest =>
+                                        contest.id === c.id
+                                          ? { ...contest, attendees: [...contest.attendees, currentHex] }
+                                          : contest
+                                      ));
+                                      const newContests = await fetchContests();
+                                      setActiveContests(newContests);
+                                    }
+                                  } catch (e: any) {
+                                    Alert.alert("Error", e.message || "Failed to enter contest");
+                                  }
+                                }}
+                              >
+                                <Zap size={14} color={c.attendees.includes(currentHex) ? "#eab308" : "#000"} />
+                                <Text style={{ color: c.attendees.includes(currentHex) ? '#eab308' : '#000', fontWeight: 'bold' }}>
+                                  {c.attendees.includes(currentHex) ? 'ENTERED' : 'ENTER CONTEST'}
+                                </Text>
+                              </TouchableOpacity>
+                            )}
+                            {isPast && (
+                              <Text style={{ color: '#aaa', fontSize: 12, fontWeight: 'bold' }}>EXPIRED</Text>
+                            )}
+                          </View>
                         </View>
-                      </View>
+                      );
+                    };
+
+                    return (
+                      <>
+                        {upcomingContests.length === 0 && <Text style={styles.emptyText}>No active contests right now.</Text>}
+                        {upcomingContests.map(c => renderContest(c, false))}
+
+                        {pastContests.length > 0 && (
+                          <Text style={{ color: '#888', fontSize: 16, fontWeight: 'bold', marginTop: 24, marginBottom: 12 }}>Past Contests</Text>
+                        )}
+                        {pastContests.map(c => renderContest(c, true))}
+                      </>
                     );
-                  })
+                  })()
                 )}
               </>
             )}

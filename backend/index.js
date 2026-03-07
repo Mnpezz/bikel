@@ -27,9 +27,43 @@ async function initializeNDK() {
         console.log('[Bot] Initialized with NSEC Signer.');
     }
     const ndk = new NDK({ explicitRelayUrls: RELAYS, signer });
-    await ndk.connect();
-    console.log('[Bot] Connected to Nostr Relays');
+
+    console.log('[Bot] Connecting to Nostr Relays...');
+    try {
+        await Promise.race([
+            ndk.connect(),
+            new Promise((_, reject) => setTimeout(() => reject(new Error("NDK Connect Timeout")), 10000))
+        ]);
+        console.log('[Bot] Connected to Nostr Relays');
+    } catch (e) {
+        console.warn('[Bot] Some relays timed out on connection, proceeding with available...', e.message);
+    }
     return ndk;
+}
+
+// Helper to prevent infinite hangs on slow Relays (like Damus without EOSE)
+async function fetchWithTimeout(ndk, filter, timeoutMs = 10000) {
+    return new Promise((resolve) => {
+        const events = new Set();
+        const sub = ndk.subscribe(filter, { closeOnEose: true });
+        let isDone = false;
+
+        sub.on('event', (e) => events.add(e));
+        sub.on('eose', () => {
+            if (!isDone) {
+                isDone = true;
+                resolve(events);
+            }
+        });
+
+        setTimeout(() => {
+            if (!isDone) {
+                console.log(`[Bot] Fetch timeout reached (${timeoutMs}ms), returning ${events.size} partial events.`);
+                isDone = true;
+                resolve(events);
+            }
+        }, timeoutMs);
+    });
 }
 
 // Very basic Coinos API function
@@ -71,7 +105,7 @@ async function processFinishedContests() {
             kinds: [31924],
             "#client": ["bikel"]
         };
-        const contestsRaw = await ndk.fetchEvents(contestFilter);
+        const contestsRaw = await fetchWithTimeout(ndk, contestFilter, 15000);
 
         const finishedContests = Array.from(contestsRaw).filter(c => {
             const end = parseInt(c.getMatchingTags('end')[0]?.[1] || '0', 10);
@@ -100,7 +134,7 @@ async function processFinishedContests() {
                 "#a": [`31924:${contest.pubkey}:${dTag}`],
                 limit: 1000
             };
-            const rsvps = await ndk.fetchEvents(rsvpFilter);
+            const rsvps = await fetchWithTimeout(ndk, rsvpFilter, 10000);
             const participantPubkeys = Array.from(rsvps).map(r => r.pubkey);
 
             if (participantPubkeys.length === 0) {
@@ -117,7 +151,7 @@ async function processFinishedContests() {
                 limit: 5000
             };
 
-            const rides = await ndk.fetchEvents(ridesFilter);
+            const rides = await fetchWithTimeout(ndk, ridesFilter, 15000);
             console.log(`[Bot] Fetched ${rides.size} total rides from participants.`);
 
             // 4 & 5. Filter rides by confidence > 0.85 and calculate leaderboard dynamically
