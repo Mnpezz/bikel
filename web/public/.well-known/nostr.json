@@ -1,0 +1,16 @@
+{
+  "names": {
+    "bot": "bf3d1beae0e9989b65744cb444fae9581907de8626fdf21f5fb3d052d19b49b4",
+    "michael": "9367a951f3e58803ab88d3053a1b7b1be4539addcec555b61cfa19c5f2397e83"
+  },
+  "relays": {
+    "bf3d1beae0e9989b65744cb444fae9581907de8626fdf21f5fb3d052d19b49b4": [
+      "wss://relay.damus.io",
+      "wss://nos.lol"
+    ],
+    "9367a951f3e58803ab88d3053a1b7b1be4539addcec555b61cfa19c5f2397e83": [
+      "wss://relay.damus.io",
+      "wss://nos.lol"
+    ]
+  }
+}

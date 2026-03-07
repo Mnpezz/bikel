@@ -18,6 +18,7 @@ function App() {
   const [viewingAuthor, setViewingAuthor] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'global' | 'personal' | 'scheduled' | 'author'>('global');
   const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
+  const [profiles, setProfiles] = useState<Record<string, any>>({});
 
   // Lightning Wallet states
   const [showNWCModal, setShowNWCModal] = useState(false);
@@ -50,19 +51,57 @@ function App() {
     }
   }, [activeDMUser]);
 
+  const loadAuthorProfiles = async (pubkeys: string[]) => {
+    const missingKeys = [...new Set(pubkeys)].filter(pk => !profiles[pk]);
+    if (missingKeys.length === 0) return;
+    try {
+      const ndk = await connectNDK();
+      const filter = { kinds: [0 as any], authors: missingKeys };
+      const metadataEvents = await ndk.fetchEvents(filter);
+
+      const newProfiles: Record<string, any> = {};
+      for (const ev of metadataEvents) {
+        try {
+          const profileStr = ev.content;
+          newProfiles[ev.pubkey] = JSON.parse(profileStr);
+        } catch (e) { }
+      }
+
+      setProfiles(prev => ({ ...prev, ...newProfiles }));
+    } catch (e) {
+      console.error("Failed to load web author profiles:", e);
+    }
+  };
+
   const loadFeeds = async () => {
     try {
-      const fetchedRides = await fetchRecentRides();
+      const [fetchedRides, fetchedScheduled] = await Promise.all([
+        fetchRecentRides(),
+        fetchScheduledRides()
+      ]);
+
       setRides(fetchedRides);
-      const fetchedScheduled = await fetchScheduledRides();
       setScheduledRides(fetchedScheduled);
+
+      let extractedKeys = [
+        ...fetchedRides.map(r => r.hexPubkey || r.pubkey),
+        ...fetchedScheduled.map(r => r.hexPubkey || r.pubkey)
+      ];
+
       if (user) {
         const personalRides = await fetchUserRides(user.pubkey);
         setMyRides(personalRides);
+        extractedKeys.push(...personalRides.map(r => r.hexPubkey || r.pubkey));
       }
+
       if (viewMode === 'author' && viewingAuthor) {
         const authoredRides = await fetchUserRides(viewingAuthor);
         setAuthorRides(authoredRides);
+        extractedKeys.push(...authoredRides.map(r => r.hexPubkey || r.pubkey));
+      }
+
+      if (extractedKeys.length > 0) {
+        loadAuthorProfiles(extractedKeys).catch(console.error);
       }
     } catch (e) {
       console.error("Failed to load feeds:", e);
@@ -330,7 +369,9 @@ function App() {
                         <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.3)', marginTop: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                           <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                             <span>
-                              Org: <span style={{ cursor: 'pointer', textDecoration: 'underline' }} onClick={(e) => { e.stopPropagation(); loadAuthorProfile(event.pubkey); }}>{event.pubkey.substring(0, 10)}...</span>
+                              Org: <span style={{ cursor: 'pointer', textDecoration: 'underline' }} onClick={(e) => { e.stopPropagation(); loadAuthorProfile(event.pubkey); }}>
+                                {profiles[event.hexPubkey || event.pubkey]?.nip05 || profiles[event.hexPubkey || event.pubkey]?.name || `${event.pubkey.substring(0, 10)}...`}
+                              </span>
                             </span>
                             {event.route && event.route.length > 0 && (
                               <button
@@ -451,7 +492,7 @@ function App() {
                     <div className="ride-pubkey" title={ride.pubkey}>
                       <div className="avatar-mini"></div>
                       <span onClick={(e) => { e.stopPropagation(); loadAuthorProfile(ride.pubkey); }} style={{ cursor: 'pointer' }}>
-                        {ride.pubkey.substring(0, 10)}...
+                        {profiles[ride.hexPubkey || ride.pubkey]?.nip05 || profiles[ride.hexPubkey || ride.pubkey]?.name || `${ride.pubkey.substring(0, 10)}...`}
                       </span>
                     </div>
                     <div className="ride-time">{formatDistanceToNow(ride.time * 1000, { addSuffix: true })}</div>
@@ -559,7 +600,7 @@ function App() {
                       style={{ color: '#00ffaa', cursor: 'pointer', marginLeft: '4px', textDecoration: 'underline' }}
                       onClick={() => loadAuthorProfile(selectedRide.pubkey)}
                     >
-                      {selectedRide.pubkey.substring(0, 16)}...
+                      {profiles[selectedRide.hexPubkey || selectedRide.pubkey]?.nip05 || profiles[selectedRide.hexPubkey || selectedRide.pubkey]?.name || `${selectedRide.pubkey.substring(0, 16)}...`}
                     </span>
                   </div>
                 </div>
@@ -632,7 +673,7 @@ function App() {
                                 style={{ color: '#00ffaa', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer', textDecoration: 'underline' }}
                                 onClick={(e) => { e.stopPropagation(); loadAuthorProfile(c.pubkey); }}
                               >
-                                {c.pubkey.substring(0, 10)}...
+                                {profiles[c.hexPubkey || c.pubkey]?.nip05 || profiles[c.hexPubkey || c.pubkey]?.name || `${c.pubkey.substring(0, 10)}...`}
                               </span>
                               <span style={{ color: '#888', fontSize: '12px' }}>{formatDistanceToNow(c.createdAt * 1000, { addSuffix: true })}</span>
                             </div>

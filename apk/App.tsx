@@ -5,7 +5,7 @@ import { LeafletView, MapLayerType, MapShapeType } from 'react-native-leaflet-vi
 import { Bike, Square, Play, Zap, History, Settings, CalendarPlus, X, MessageSquare, Globe, LocateFixed } from 'lucide-react-native';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import * as Clipboard from 'expo-clipboard';
-import { connectNDK, publishRide, fetchMyRides, getPrivateKeyNsec, getPublicKeyNpub, getPublicKeyHex, setPrivateKey, publishScheduledRide, publishContestEvent, fetchContests, fetchRecentRides, fetchScheduledRides, publishRSVP, connectNWC, zapRideEvent, fetchComments, publishComment, fetchDMs, sendDM, fetchRideLeaderboard, ESCROW_PUBKEY, RideEvent, ScheduledRideEvent, ContestEvent, RideComment, DMessage } from './src/lib/nostr';
+import { connectNDK, publishRide, fetchMyRides, getPrivateKeyNsec, getPublicKeyNpub, getPublicKeyHex, setPrivateKey, publishScheduledRide, publishContestEvent, fetchContests, fetchRecentRides, fetchScheduledRides, publishRSVP, connectNWC, zapRideEvent, fetchComments, publishComment, fetchDMs, sendDM, publishProfile, fetchRideLeaderboard, ESCROW_PUBKEY, RideEvent, ScheduledRideEvent, ContestEvent, RideComment, DMessage } from './src/lib/nostr';
 import * as SecureStore from 'expo-secure-store';
 
 export default function App() {
@@ -24,6 +24,7 @@ export default function App() {
   const [selectedRoute, setSelectedRoute] = useState<{ lat: number, lng: number }[]>([]); // To display on map
   const [mapCenter, setMapCenter] = useState<{ lat: number, lng: number } | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [profiles, setProfiles] = useState<Record<string, any>>({}); // NDKUserProfile Map
 
   // Modals
   const [showHistory, setShowHistory] = useState(false);
@@ -31,6 +32,15 @@ export default function App() {
   const [feedTab, setFeedTab] = useState<'contests' | 'rides' | 'feed'>('feed');
   const [showSettings, setShowSettings] = useState(false);
   const [showSchedule, setShowSchedule] = useState(false);
+
+  // Profile Editor States
+  const [editName, setEditName] = useState('');
+  const [editAbout, setEditAbout] = useState('');
+  const [editPicture, setEditPicture] = useState('');
+  const [editNip05, setEditNip05] = useState('');
+  const [editLud16, setEditLud16] = useState('');
+  const [isPublishingProfile, setIsPublishingProfile] = useState(false);
+
   const [currentNsec, setCurrentNsec] = useState<string>('');
   const [currentNpub, setCurrentNpub] = useState<string>('');
   const [currentHex, setCurrentHex] = useState<string>('');
@@ -137,43 +147,85 @@ export default function App() {
     }
   }, [showDiscussion, selectedDiscussionRide]);
 
+  const loadAuthorProfiles = async (pubkeys: string[]) => {
+    const missingKeys = [...new Set(pubkeys)].filter(pk => !profiles[pk]);
+    if (missingKeys.length === 0) return;
+    try {
+      const ndk = await connectNDK();
+      const filter = { kinds: [0 as any], authors: missingKeys };
+      const metadataEvents = await ndk.fetchEvents(filter);
+
+      const newProfiles: Record<string, any> = {};
+      for (const ev of metadataEvents) {
+        try {
+          const profileStr = ev.content;
+          newProfiles[ev.pubkey] = JSON.parse(profileStr);
+        } catch (e) { }
+      }
+
+      setProfiles(prev => ({ ...prev, ...newProfiles }));
+    } catch (e) {
+      console.error("Failed to load author profiles inside background worker", e);
+    }
+  };
+
   const loadFeeds = async () => {
     try {
-      const personalRides = await fetchMyRides();
-      setMyRides(personalRides);
-    } catch (e: any) {
-      console.error("fetchMyRides error:", e);
-      Alert.alert("fetchMyRides error", e.message || String(e));
-    }
+      const results = await Promise.allSettled([
+        fetchMyRides(),
+        fetchRecentRides(),
+        fetchScheduledRides(),
+        fetchContests()
+      ]);
 
-    try {
-      const recentRides = await fetchRecentRides();
-      setGlobalRides(recentRides);
-    } catch (e: any) {
-      console.error("fetchRecentRides error:", e);
-      Alert.alert("fetchRecentRides error", e.message || String(e));
-    }
+      let extractedPubkeys: string[] = [];
 
-    try {
-      const groupEvents = await fetchScheduledRides();
-      setScheduledRides(groupEvents);
-    } catch (e: any) {
-      console.error("fetchScheduledRides error:", e);
-      Alert.alert("fetchScheduledRides error", e.message || String(e));
-    }
+      if (results[0].status === 'fulfilled') {
+        setMyRides(results[0].value);
+      } else {
+        console.error("fetchMyRides error:", results[0].reason);
+      }
 
-    try {
-      const contests = await fetchContests();
-      setActiveContests(contests);
+      if (results[1].status === 'fulfilled') {
+        setGlobalRides(results[1].value);
+        extractedPubkeys.push(...results[1].value.map(r => r.hexPubkey || r.pubkey));
+      } else {
+        console.error("fetchRecentRides error:", results[1].reason);
+      }
+
+      if (results[2].status === 'fulfilled') {
+        setScheduledRides(results[2].value);
+        extractedPubkeys.push(...results[2].value.map(r => r.hexPubkey || r.pubkey));
+      } else {
+        console.error("fetchScheduledRides error:", results[2].reason);
+      }
+
+      if (results[3].status === 'fulfilled') {
+        setActiveContests(results[3].value);
+        extractedPubkeys.push(...results[3].value.map(c => c.hexPubkey || c.pubkey));
+      } else {
+        console.error("fetchContests error:", results[3].reason);
+      }
+
+      // Background NIP-05 Profile Loader Cascade
+      if (extractedPubkeys.length > 0) {
+        loadAuthorProfiles(extractedPubkeys).catch(console.error);
+      }
     } catch (e) {
-      console.error("fetchContests error:", e);
+      console.error("Critical error in loadFeeds:", e);
     }
   };
 
   const handleRefreshFeeds = async () => {
     setIsRefreshing(true);
     try {
-      await loadFeeds();
+      // Forcefully timeout after 10 seconds to guarantee the spinner never hangs infinitely
+      await Promise.race([
+        loadFeeds(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Network timeout')), 10000))
+      ]);
+    } catch (e) {
+      console.error("Failed to refresh feeds before timeout", e);
     } finally {
       setIsRefreshing(false);
     }
@@ -363,7 +415,19 @@ export default function App() {
                 const hex = await getPublicKeyHex();
                 if (nsec) setCurrentNsec(nsec);
                 if (npub) setCurrentNpub(npub);
-                if (hex) setCurrentHex(hex);
+                if (hex) {
+                  setCurrentHex(hex);
+                  const p = profiles[hex];
+                  if (p) {
+                    setEditName(p.name || '');
+                    setEditAbout(p.about || '');
+                    setEditPicture(p.picture || '');
+                    setEditNip05(p.nip05 || '');
+                    setEditLud16(p.lud16 || '');
+                  } else {
+                    setEditName(''); setEditAbout(''); setEditPicture(''); setEditNip05(''); setEditLud16('');
+                  }
+                }
               } catch (e) {
                 console.error("Settings keys load error:", e);
               }
@@ -422,6 +486,77 @@ export default function App() {
                 }
               }}>
                 <Text style={styles.saveButtonText}>SAVE KEY</Text>
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.settingsSection}>
+              <Text style={styles.settingsLabel}>EDIT PROFILE</Text>
+
+              <TextInput
+                style={[styles.keyInput, { marginBottom: 8 }]}
+                placeholder="Name"
+                placeholderTextColor="rgba(255,255,255,0.3)"
+                value={editName}
+                onChangeText={setEditName}
+              />
+              <TextInput
+                style={[styles.keyInput, { marginBottom: 8 }]}
+                placeholder="About"
+                placeholderTextColor="rgba(255,255,255,0.3)"
+                value={editAbout}
+                onChangeText={setEditAbout}
+                multiline
+              />
+              <TextInput
+                style={[styles.keyInput, { marginBottom: 8 }]}
+                placeholder="Picture URL"
+                placeholderTextColor="rgba(255,255,255,0.3)"
+                value={editPicture}
+                onChangeText={setEditPicture}
+                autoCapitalize="none"
+              />
+              <TextInput
+                style={[styles.keyInput, { marginBottom: 8 }]}
+                placeholder="NIP-05 (e.g., alice@domain.com)"
+                placeholderTextColor="rgba(255,255,255,0.3)"
+                value={editNip05}
+                onChangeText={setEditNip05}
+                autoCapitalize="none"
+              />
+              <TextInput
+                style={[styles.keyInput, { marginBottom: 12 }]}
+                placeholder="Lightning Address (lud16)"
+                placeholderTextColor="rgba(255,255,255,0.3)"
+                value={editLud16}
+                onChangeText={setEditLud16}
+                autoCapitalize="none"
+              />
+
+              <TouchableOpacity
+                style={[styles.saveButton, { backgroundColor: isPublishingProfile ? '#555' : '#00ccff' }]}
+                disabled={isPublishingProfile}
+                onPress={async () => {
+                  try {
+                    setIsPublishingProfile(true);
+                    const success = await publishProfile({
+                      name: editName,
+                      about: editAbout,
+                      picture: editPicture,
+                      nip05: editNip05,
+                      lud16: editLud16
+                    });
+                    if (success) {
+                      Alert.alert("Success", "Profile updated globally on Nostr!");
+                    } else {
+                      Alert.alert("Error", "Failed to publish profile. Check internet connection.");
+                    }
+                  } catch (e: any) {
+                    Alert.alert("Error", e.message);
+                  } finally {
+                    setIsPublishingProfile(false);
+                  }
+                }}>
+                <Text style={styles.saveButtonText}>{isPublishingProfile ? 'SAVING...' : 'SAVE PROFILE'}</Text>
               </TouchableOpacity>
             </View>
 
@@ -613,110 +748,127 @@ export default function App() {
                     return (
                       <>
                         {upcomingRides.length === 0 && <Text style={styles.emptyText}>No upcoming rides.</Text>}
-                        {upcomingRides.map(r => (
-                          <View key={r.id} style={styles.historyCard}>
-                            <Image source={r.image ? { uri: r.image } : require('./assets/bikelLogo.jpg')} style={{ width: '100%', height: 150, borderRadius: 8, marginBottom: 12 }} />
-                            <Text style={{ color: '#00ffaa', fontWeight: 'bold', marginBottom: 4 }}>{r.name}</Text>
-                            <Text style={{ color: '#aaa', fontSize: 12, marginBottom: 8 }}>
-                              {new Date(r.startTime * 1000).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}
-                              {r.timezone ? ` (${r.timezone})` : ""}
-                            </Text>
-                            <Text style={{ color: '#fff', fontSize: 13, marginBottom: 8 }}>{r.description}</Text>
-                            <Text style={{ color: '#888', fontSize: 12, marginBottom: 12 }}>📍 {r.locationStr}</Text>
+                        {upcomingRides.map(r => {
+                          const profile = profiles[r.hexPubkey];
+                          const displayName = profile?.nip05 || profile?.name || r.pubkey.substring(0, 10) + '...';
 
-                            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                              <View style={{ flexDirection: 'row', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-                                {r.route && r.route.length > 0 && (
-                                  <TouchableOpacity onPress={() => {
-                                    setShowFeed(false);
-                                    setShowHistory(false);
-                                    setSelectedRoute(r.route!.map(pt => ({ lat: pt[0], lng: pt[1] })));
-                                  }}>
-                                    <Text style={{ color: '#00ffaa', fontSize: 11, fontWeight: 'bold' }}>🗺️ Map</Text>
-                                  </TouchableOpacity>
-                                )}
-                                <TouchableOpacity onPress={() => {
-                                  setSelectedDiscussionRide(r);
-                                  setShowDiscussion(true);
-                                }}>
-                                  <Text style={{ color: '#00ccff', fontSize: 11, fontWeight: 'bold' }}>💬 Discuss</Text>
-                                </TouchableOpacity>
-                                <TouchableOpacity onPress={() => setActiveDMUser(r.pubkey)}>
-                                  <Text style={{ color: '#00ccff', fontSize: 11, textDecorationLine: 'underline' }}>Message Org</Text>
-                                </TouchableOpacity>
-                                {isNWCConnected && (
-                                  <TouchableOpacity disabled={isZapping} style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }} onPress={async () => {
-                                    if (isZapping) return;
-                                    setIsZapping(true);
-                                    try {
-                                      await zapRideEvent(r.id, r.hexPubkey, r.kind, 21, "Thanks for organizing this ride!");
-                                      Alert.alert("Zap Sent", "21 sats sent to organizer!");
-                                    } catch (e: any) {
-                                      Alert.alert("Zap Failed", e.message || "Unknown error");
-                                    }
-                                    setIsZapping(false);
-                                  }}>
-                                    <Zap size={14} color={isZapping ? "#ccc" : "#eab308"} />
-                                    <Text style={{ color: '#eab308', fontSize: 12, fontWeight: 'bold' }}>21</Text>
-                                  </TouchableOpacity>
-                                )}
+                          return (
+                            <View key={r.id} style={styles.historyCard}>
+                              <Image source={r.image ? { uri: r.image } : require('./assets/bikelLogo.jpg')} style={{ width: '100%', height: 150, borderRadius: 8, marginBottom: 12 }} />
+
+                              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                                <Text style={{ color: '#00ffaa', fontWeight: 'bold' }}>{r.name}</Text>
+                                <Text style={{ color: '#888', fontSize: 12 }}>{displayName}</Text>
                               </View>
-                              <TouchableOpacity
-                                style={{ backgroundColor: r.attendees.includes(currentHex) ? 'rgba(0, 255, 170, 0.1)' : 'rgba(255,255,255,0.1)', borderColor: r.attendees.includes(currentHex) ? '#00ffaa' : 'transparent', borderWidth: 1, paddingHorizontal: 16, paddingVertical: 6, borderRadius: 20 }}
-                                disabled={r.attendees.includes(currentHex)}
-                                onPress={async () => {
-                                  const joined = await publishRSVP(r);
-                                  if (joined) {
-                                    Alert.alert("Success", "You've successfully RSVP'd to this ride! An event has been published.");
-                                    const newEvents = await fetchScheduledRides();
-                                    setScheduledRides(newEvents);
-                                  } else {
-                                    Alert.alert("Error", "Could not RSVP. Please make sure you have generated a Nostr key in settings.");
-                                  }
-                                }}
-                              >
-                                <Text style={{ color: r.attendees.includes(currentHex) ? '#00ffaa' : '#fff', fontSize: 12, fontWeight: 'bold' }}>
-                                  {r.attendees.includes(currentHex) ? 'Attending' : 'RSVP'}
-                                </Text>
-                              </TouchableOpacity>
-                            </View>
-                          </View>
-                        ))}
+
+                              <Text style={{ color: '#aaa', fontSize: 12, marginBottom: 8 }}>
+                                {new Date(r.startTime * 1000).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}
+                                {r.timezone ? ` (${r.timezone})` : ""}
+                              </Text>
+                              <Text style={{ color: '#fff', fontSize: 13, marginBottom: 8 }}>{r.description}</Text>
+                              <Text style={{ color: '#888', fontSize: 12, marginBottom: 12 }}>📍 {r.locationStr}</Text>
+
+                              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <View style={{ flexDirection: 'row', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+                                  {r.route && r.route.length > 0 && (
+                                    <TouchableOpacity onPress={() => {
+                                      setShowFeed(false);
+                                      setShowHistory(false);
+                                      setSelectedRoute(r.route!.map(pt => ({ lat: pt[0], lng: pt[1] })));
+                                    }}>
+                                      <Text style={{ color: '#00ffaa', fontSize: 11, fontWeight: 'bold' }}>🗺️ Map</Text>
+                                    </TouchableOpacity>
+                                  )}
+                                  <TouchableOpacity onPress={() => {
+                                    setSelectedDiscussionRide(r);
+                                    setShowDiscussion(true);
+                                  }}>
+                                    <Text style={{ color: '#00ccff', fontSize: 11, fontWeight: 'bold' }}>💬 Discuss</Text>
+                                  </TouchableOpacity>
+                                  <TouchableOpacity onPress={() => setActiveDMUser(r.pubkey)}>
+                                    <Text style={{ color: '#00ccff', fontSize: 11, textDecorationLine: 'underline' }}>Message Org</Text>
+                                  </TouchableOpacity>
+                                  {isNWCConnected && (
+                                    <TouchableOpacity disabled={isZapping} style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }} onPress={async () => {
+                                      if (isZapping) return;
+                                      setIsZapping(true);
+                                      try {
+                                        await zapRideEvent(r.id, r.hexPubkey, r.kind, 21, "Thanks for organizing this ride!");
+                                        Alert.alert("Zap Sent", "21 sats sent to organizer!");
+                                      } catch (e: any) {
+                                        Alert.alert("Zap Failed", e.message || "Unknown error");
+                                      }
+                                      setIsZapping(false);
+                                    }}>
+                                      <Zap size={14} color={isZapping ? "#ccc" : "#eab308"} />
+                                      <Text style={{ color: '#eab308', fontSize: 12, fontWeight: 'bold' }}>21</Text>
+                                    </TouchableOpacity>
+                                  )}
+                                </View>
+                                <TouchableOpacity
+                                  style={{ backgroundColor: r.attendees.includes(currentHex) ? 'rgba(0, 255, 170, 0.1)' : 'rgba(255,255,255,0.1)', borderColor: r.attendees.includes(currentHex) ? '#00ffaa' : 'transparent', borderWidth: 1, paddingHorizontal: 16, paddingVertical: 6, borderRadius: 20 }}
+                                  disabled={r.attendees.includes(currentHex)}
+                                  onPress={async () => {
+                                    const joined = await publishRSVP(r);
+                                    if (joined) {
+                                      Alert.alert("Success", "You've successfully RSVP'd to this ride! An event has been published.");
+                                      const newEvents = await fetchScheduledRides();
+                                      setScheduledRides(newEvents);
+                                    } else {
+                                      Alert.alert("Error", "Could not RSVP. Please make sure you have generated a Nostr key in settings.");
+                                    }
+                                  }}>
+                                  <Text style={{ color: r.attendees.includes(currentHex) ? '#00ffaa' : '#fff', fontSize: 12, fontWeight: 'bold' }}>
+                                    {r.attendees.includes(currentHex) ? 'Attending' : 'RSVP'}
+                                  </Text>
+                                </TouchableOpacity>
+                              </View>
+                            </View >
+                          ); // <-- Added correct closure for mapping upcomingRides!
+                        })}
                         {pastRides.length > 0 && (
                           <>
                             <Text style={{ color: '#888', fontSize: 16, fontWeight: 'bold', marginTop: 24, marginBottom: 12 }}>Past Community Rides</Text>
-                            {pastRides.map(r => (
-                              <View key={r.id} style={[styles.historyCard, { opacity: 0.6 }]}>
-                                <Image source={r.image ? { uri: r.image } : require('./assets/bikelLogo.jpg')} style={{ width: '100%', height: 150, borderRadius: 8, marginBottom: 12 }} />
-                                <Text style={{ color: '#888', fontWeight: 'bold', marginBottom: 4 }}>{r.name}</Text>
-                                <Text style={{ color: '#666', fontSize: 12, marginBottom: 8 }}>
-                                  {new Date(r.startTime * 1000).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}
-                                  {r.timezone ? ` (${r.timezone})` : ""}
-                                </Text>
-                                <Text style={{ color: '#888', fontSize: 13, marginBottom: 8 }}>{r.description}</Text>
-                                <Text style={{ color: '#666', fontSize: 12, marginBottom: 12 }}>📍 {r.locationStr}</Text>
+                            {pastRides.map(r => {
+                              const profile = profiles[r.hexPubkey];
+                              const displayName = profile?.nip05 || profile?.name || r.pubkey.substring(0, 10) + '...';
 
-                                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                                  <View style={{ flexDirection: 'row', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-                                    {r.route && r.route.length > 0 && (
+                              return (
+                                <View key={r.id} style={[styles.historyCard, { opacity: 0.6 }]}>
+                                  <Image source={r.image ? { uri: r.image } : require('./assets/bikelLogo.jpg')} style={{ width: '100%', height: 150, borderRadius: 8, marginBottom: 12 }} />
+                                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                                    <Text style={{ color: '#888', fontWeight: 'bold' }}>{r.name}</Text>
+                                    <Text style={{ color: '#666', fontSize: 12 }}>{displayName}</Text>
+                                  </View>
+                                  <Text style={{ color: '#666', fontSize: 12, marginBottom: 8 }}>
+                                    {new Date(r.startTime * 1000).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}
+                                    {r.timezone ? ` (${r.timezone})` : ""}
+                                  </Text>
+                                  <Text style={{ color: '#888', fontSize: 13, marginBottom: 8 }}>{r.description}</Text>
+                                  <Text style={{ color: '#666', fontSize: 12, marginBottom: 12 }}>📍 {r.locationStr}</Text>
+
+                                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                                    <View style={{ flexDirection: 'row', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+                                      {r.route && r.route.length > 0 && (
+                                        <TouchableOpacity onPress={() => {
+                                          setShowFeed(false);
+                                          setShowHistory(false);
+                                          setSelectedRoute(r.route!.map(pt => ({ lat: pt[0], lng: pt[1] })));
+                                        }}>
+                                          <Text style={{ color: '#00ffaa', fontSize: 11, fontWeight: 'bold' }}>🗺️ Map</Text>
+                                        </TouchableOpacity>
+                                      )}
                                       <TouchableOpacity onPress={() => {
-                                        setShowFeed(false);
-                                        setShowHistory(false);
-                                        setSelectedRoute(r.route!.map(pt => ({ lat: pt[0], lng: pt[1] })));
+                                        setSelectedDiscussionRide(r);
+                                        setShowDiscussion(true);
                                       }}>
-                                        <Text style={{ color: '#00ffaa', fontSize: 11, fontWeight: 'bold' }}>🗺️ Map</Text>
+                                        <Text style={{ color: '#00ccff', fontSize: 11, fontWeight: 'bold' }}>💬 Discuss</Text>
                                       </TouchableOpacity>
-                                    )}
-                                    <TouchableOpacity onPress={() => {
-                                      setSelectedDiscussionRide(r);
-                                      setShowDiscussion(true);
-                                    }}>
-                                      <Text style={{ color: '#00ccff', fontSize: 11, fontWeight: 'bold' }}>💬 Discuss</Text>
-                                    </TouchableOpacity>
+                                    </View>
                                   </View>
                                 </View>
-                              </View>
-                            ))}
+                              ); // <-- Added correct closure for mapping pastRides!
+                            })}
                           </>
                         )}
                       </>
@@ -732,336 +884,343 @@ export default function App() {
                 {globalRides.length === 0 ? (
                   <Text style={styles.emptyText}>No public rides found.</Text>
                 ) : (
-                  globalRides.map(r => (
-                    <View key={r.id} style={[styles.historyCard, { borderColor: 'rgba(255,255,255,0.05)' }]}>
-                      <Image source={r.image ? { uri: r.image } : require('./assets/bikelLogo.jpg')} style={{ width: '100%', height: 150, borderRadius: 8, marginBottom: 12 }} />
-                      <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-                        <Text style={{ color: '#888', fontSize: 12 }}>{r.pubkey.substring(0, 10)}...</Text>
-                        <Text style={styles.historyTime}>
-                          {r.title || new Date(r.time * 1000).toLocaleDateString()}
-                        </Text>
-                      </View>
-                      {r.description ? <Text style={{ color: '#ccc', fontSize: 13, marginBottom: 12 }}>{r.description}</Text> : null}
-                      <View style={[styles.historyStats, { justifyContent: 'flex-start', gap: 16 }]}>
-                        <Text style={styles.historyStat}>{r.distance} mi</Text>
-                        <Text style={styles.historyStat}>{r.duration}</Text>
+                  globalRides.map(r => {
+                    const profile = profiles[r.hexPubkey];
+                    const displayName = profile?.nip05 || profile?.name || r.pubkey.substring(0, 10) + '...';
 
-                        {isNWCConnected && (
-                          <TouchableOpacity disabled={isZapping} style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginLeft: 'auto', backgroundColor: 'rgba(234, 179, 8, 0.1)', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12, borderWidth: 1, borderColor: 'rgba(234, 179, 8, 0.3)' }} onPress={async () => {
-                            if (isZapping) return;
-                            setIsZapping(true);
-                            try {
-                              await zapRideEvent(r.id, r.hexPubkey, r.kind, 21, "Great ride!");
-                              Alert.alert("Zap Sent", "21 sats sent to rider!");
-                            } catch (e: any) {
-                              Alert.alert("Zap Failed", e.message || "Unknown error");
-                            }
-                            setIsZapping(false);
+                    return (
+                      <View key={r.id} style={[styles.historyCard, { borderColor: 'rgba(255,255,255,0.05)' }]}>
+                        <Image source={r.image ? { uri: r.image } : require('./assets/bikelLogo.jpg')} style={{ width: '100%', height: 150, borderRadius: 8, marginBottom: 12 }} />
+                        <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                          <Text style={{ color: '#888', fontSize: 12 }}>{displayName}</Text>
+                          <Text style={styles.historyTime}>
+                            {r.title || new Date(r.time * 1000).toLocaleDateString()}
+                          </Text>
+                        </View>
+                        {r.description ? <Text style={{ color: '#ccc', fontSize: 13, marginBottom: 12 }}>{r.description}</Text> : null}
+                        <View style={[styles.historyStats, { justifyContent: 'flex-start', gap: 16 }]}>
+                          <Text style={styles.historyStat}>{r.distance} mi</Text>
+                          <Text style={styles.historyStat}>{r.duration}</Text>
+
+                          {isNWCConnected && (
+                            <TouchableOpacity disabled={isZapping} style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginLeft: 'auto', backgroundColor: 'rgba(234, 179, 8, 0.1)', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12, borderWidth: 1, borderColor: 'rgba(234, 179, 8, 0.3)' }} onPress={async () => {
+                              if (isZapping) return;
+                              setIsZapping(true);
+                              try {
+                                await zapRideEvent(r.id, r.hexPubkey, r.kind, 21, "Great ride!");
+                                Alert.alert("Zap Sent", "21 sats sent to rider!");
+                              } catch (e: any) {
+                                Alert.alert("Zap Failed", e.message || "Unknown error");
+                              }
+                              setIsZapping(false);
+                            }}>
+                              <Zap size={12} color={isZapping ? "#ccc" : "#eab308"} />
+                              <Text style={{ color: '#eab308', fontSize: 12, fontWeight: 'bold' }}>21</Text>
+                            </TouchableOpacity>
+                          )}
+                        </View>
+                        <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
+                          <TouchableOpacity style={{ backgroundColor: 'rgba(0, 204, 255, 0.1)', paddingVertical: 8, paddingHorizontal: 12, borderRadius: 6, alignItems: 'center', flex: 1 }} onPress={() => {
+                            setSelectedDiscussionRide(r);
+                            setShowDiscussion(true);
                           }}>
-                            <Zap size={12} color={isZapping ? "#ccc" : "#eab308"} />
-                            <Text style={{ color: '#eab308', fontSize: 12, fontWeight: 'bold' }}>21</Text>
+                            <Text style={{ color: '#00ccff', fontWeight: 'bold', fontSize: 12 }}>💬 DISCUSS</Text>
                           </TouchableOpacity>
-                        )}
+                          {r.route && r.route.length > 0 && (
+                            <TouchableOpacity
+                              style={{ backgroundColor: 'rgba(0, 255, 170, 0.1)', paddingVertical: 8, paddingHorizontal: 12, borderRadius: 6, alignItems: 'center', flex: 1 }}
+                              onPress={() => {
+                                setShowFeed(false);
+                                setShowHistory(false);
+                                setSelectedRoute(r.route!.map(pt => ({ lat: pt[0], lng: pt[1] })));
+                              }}
+                            >
+                              <Text style={{ color: '#00ffaa', fontWeight: 'bold', fontSize: 12 }}>🗺️ MAP</Text>
+                            </TouchableOpacity>
+                          )}
+                        </View>
                       </View>
-                      <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
-                        <TouchableOpacity style={{ backgroundColor: 'rgba(0, 204, 255, 0.1)', paddingVertical: 8, paddingHorizontal: 12, borderRadius: 6, alignItems: 'center', flex: 1 }} onPress={() => {
-                          setSelectedDiscussionRide(r);
-                          setShowDiscussion(true);
-                        }}>
-                          <Text style={{ color: '#00ccff', fontWeight: 'bold', fontSize: 12 }}>💬 DISCUSS</Text>
-                        </TouchableOpacity>
-                        {r.route && r.route.length > 0 && (
-                          <TouchableOpacity
-                            style={{ backgroundColor: 'rgba(0, 255, 170, 0.1)', paddingVertical: 8, paddingHorizontal: 12, borderRadius: 6, alignItems: 'center', flex: 1 }}
-                            onPress={() => {
-                              setShowFeed(false);
-                              setShowHistory(false);
-                              setSelectedRoute(r.route!.map(pt => ({ lat: pt[0], lng: pt[1] })));
-                            }}
-                          >
-                            <Text style={{ color: '#00ffaa', fontWeight: 'bold', fontSize: 12 }}>🗺️ MAP</Text>
-                          </TouchableOpacity>
-                        )}
-                      </View>
-                    </View>
-                  ))
+                    );
+                  })
                 )}
               </>
             )}
           </ScrollView>
         </View>
-      )}
+      )
+      }
 
       {/* Schedule Group Ride / Contest Overlay */}
-      {showSchedule && (
-        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.historyOverlay}>
-          <Text style={styles.historyTitle}>{schedType === 'ride' ? 'Schedule Group Ride' : 'Create Community Contest'}</Text>
+      {
+        showSchedule && (
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.historyOverlay}>
+            <Text style={styles.historyTitle}>{schedType === 'ride' ? 'Schedule Group Ride' : 'Create Community Contest'}</Text>
 
-          <View style={{ flexDirection: 'row', marginBottom: 16, gap: 10 }}>
-            <TouchableOpacity style={{ flex: 1, backgroundColor: schedType === 'ride' ? '#00ffaa' : 'rgba(255,255,255,0.1)', paddingVertical: 10, borderRadius: 8, alignItems: 'center' }} onPress={() => setSchedType('ride')}>
-              <Text style={{ color: schedType === 'ride' ? '#000' : '#fff', fontWeight: 'bold' }}>GROUP RIDE</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={{ flex: 1, backgroundColor: schedType === 'contest' ? '#eab308' : 'rgba(255,255,255,0.1)', paddingVertical: 10, borderRadius: 8, alignItems: 'center' }} onPress={() => setSchedType('contest')}>
-              <Text style={{ color: schedType === 'contest' ? '#000' : '#fff', fontWeight: 'bold' }}>CONTEST</Text>
-            </TouchableOpacity>
-          </View>
-
-          <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
-            <View style={styles.settingsSection}>
-              <Text style={styles.settingsLabel}>{schedType === 'ride' ? 'RIDE NAME' : 'CONTEST TITLE'}</Text>
-              <TextInput
-                style={styles.keyInput}
-                placeholder="e.g. Saturday Morning Coffee Ride"
-                placeholderTextColor="rgba(255,255,255,0.3)"
-                value={schedName}
-                onChangeText={setSchedName}
-              />
-              <Text style={styles.settingsLabel}>DESCRIPTION</Text>
-              <TextInput
-                style={[styles.keyInput, { height: 80 }]} placeholder="Pace, expected distance, drop/no-drop..."
-                placeholderTextColor="rgba(255,255,255,0.3)"
-                multiline
-                value={schedDesc}
-                onChangeText={setSchedDesc}
-              />
-              <Text style={styles.settingsLabel}>START TIME/DATE</Text>
-              <View style={{ flexDirection: 'row', gap: 10, marginBottom: 16 }}>
-                <TouchableOpacity style={[styles.keyInput, { flex: 1, alignItems: 'center', justifyContent: 'center' }]} onPress={() => setShowDatePicker(true)}>
-                  <Text style={{ color: '#fff' }}>{schedDate.toLocaleDateString()}</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={[styles.keyInput, { flex: 1, alignItems: 'center', justifyContent: 'center' }]} onPress={() => setShowTimePicker(true)}>
-                  <Text style={{ color: '#fff' }}>{schedDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
-                </TouchableOpacity>
-              </View>
-
-              {showDatePicker && (
-                <DateTimePicker
-                  value={schedDate}
-                  mode="date"
-                  display="default"
-                  onChange={(event: DateTimePickerEvent, selectedDate?: Date) => {
-                    setShowDatePicker(Platform.OS === 'ios');
-                    if (selectedDate) setSchedDate(selectedDate);
-                  }}
-                />
-              )}
-              {showTimePicker && (
-                <DateTimePicker
-                  value={schedDate}
-                  mode="time"
-                  display="default"
-                  onChange={(event: DateTimePickerEvent, selectedDate?: Date) => {
-                    setShowTimePicker(Platform.OS === 'ios');
-                    if (selectedDate) setSchedDate(selectedDate);
-                  }}
-                />
-              )}
-
-              {schedType === 'ride' && (
-                <>
-                  <Text style={styles.settingsLabel}>MEETING LOCATION</Text>
-                  <View style={{ flexDirection: 'row', gap: 10 }}>
-                    <TextInput
-                      style={[styles.keyInput, { flex: 1, marginBottom: 0 }]}
-                      placeholder="e.g. 123 Main St Coffee Shop"
-                      placeholderTextColor="rgba(255,255,255,0.3)"
-                      value={schedLocation}
-                      onChangeText={setSchedLocation}
-                    />
-                    <TouchableOpacity
-                      style={{ backgroundColor: 'rgba(255,255,255,0.1)', paddingHorizontal: 16, borderRadius: 8, justifyContent: 'center', borderColor: 'rgba(255,255,255,0.3)', borderWidth: 1 }}
-                      disabled={isGettingLocation}
-                      onPress={async () => {
-                        setIsGettingLocation(true);
-                        try {
-                          let loc = await Location.getLastKnownPositionAsync();
-                          if (!loc) loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Low });
-                          if (loc) {
-                            setSchedLocation(`geo:${loc.coords.latitude.toFixed(5)},${loc.coords.longitude.toFixed(5)}`);
-                          }
-                        } catch (e) {
-                          Alert.alert("Location Error", "Could not fetch current GPS location.");
-                        }
-                        setIsGettingLocation(false);
-                      }}
-                    >
-                      {isGettingLocation ? <ActivityIndicator color="#00ffaa" size="small" /> : <Text style={{ color: '#00ffaa' }}>Use GPS</Text>}
-                    </TouchableOpacity>
-                  </View>
-
-                  <Text style={[styles.settingsLabel, { marginTop: 16 }]}>REPEAT CADENCE</Text>
-                  <View style={{ flexDirection: 'row', gap: 5, marginBottom: 16 }}>
-                    {[
-                      { id: 'none', label: 'None' },
-                      { id: 'weekly', label: 'Weekly' },
-                      { id: 'biweekly', label: 'Bi-Weekly' },
-                      { id: 'monthly', label: 'Monthly' }
-                    ].map(opt => (
-                      <TouchableOpacity
-                        key={opt.id}
-                        style={{
-                          flex: 1, backgroundColor: schedCadence === opt.id ? '#00ffaa' : 'rgba(255,255,255,0.1)',
-                          paddingVertical: 12, borderRadius: 8, alignItems: 'center', borderColor: 'rgba(255,255,255,0.3)', borderWidth: 1
-                        }}
-                        onPress={() => setSchedCadence(opt.id as any)}
-                      >
-                        <Text style={{ color: schedCadence === opt.id ? '#000' : '#fff', fontWeight: 'bold', fontSize: 12 }}>
-                          {opt.label}
-                        </Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-
-                  {schedCadence !== 'none' && (
-                    <View style={{ marginBottom: 16 }}>
-                      <Text style={styles.settingsLabel}>NUMBER OF EVENTS (MAX 6)</Text>
-                      <View style={{ flexDirection: 'row', gap: 10, alignItems: 'center' }}>
-                        {[2, 3, 4, 5, 6].map(num => (
-                          <TouchableOpacity
-                            key={num}
-                            style={{
-                              flex: 1, backgroundColor: schedOccurrences === num ? '#00ffaa' : 'rgba(255,255,255,0.1)',
-                              paddingVertical: 12, borderRadius: 8, alignItems: 'center', borderColor: 'rgba(255,255,255,0.3)', borderWidth: 1
-                            }}
-                            onPress={() => setSchedOccurrences(num)}
-                          >
-                            <Text style={{ color: schedOccurrences === num ? '#000' : '#fff', fontWeight: 'bold' }}>{num}</Text>
-                          </TouchableOpacity>
-                        ))}
-                      </View>
-                    </View>
-                  )}
-                </>
-              )}
-
-              {schedType === 'contest' && (
-                <>
-                  <Text style={[styles.settingsLabel, { marginTop: 16 }]}>CONTEST DURATION (DAYS)</Text>
-                  <TextInput
-                    style={[styles.keyInput, { marginBottom: 16 }]}
-                    keyboardType="number-pad"
-                    value={contestEndDays}
-                    onChangeText={setContestEndDays}
-                  />
-
-                  <Text style={[styles.settingsLabel, { marginTop: 8 }]}>WINNING METRIC</Text>
-                  <View style={{ flexDirection: 'row', gap: 5, marginBottom: 16 }}>
-                    {[
-                      { id: 'max_distance', label: 'Furthest' },
-                      { id: 'max_elevation', label: 'Elevation' },
-                      { id: 'fastest_mile', label: 'Fastest' }
-                    ].map(opt => (
-                      <TouchableOpacity
-                        key={opt.id}
-                        style={{
-                          flex: 1, backgroundColor: contestParam === opt.id ? '#00ffaa' : 'rgba(255,255,255,0.1)',
-                          paddingVertical: 12, borderRadius: 8, alignItems: 'center', borderColor: 'rgba(255,255,255,0.3)', borderWidth: 1
-                        }}
-                        onPress={() => setContestParam(opt.id as any)}
-                      >
-                        <Text style={{ color: contestParam === opt.id ? '#000' : '#fff', fontWeight: 'bold', fontSize: 12 }}>
-                          {opt.label}
-                        </Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-
-                  <Text style={[styles.settingsLabel, { marginTop: 8 }]}>ENTRY FEE (SATS - ZAP TO ENTER)</Text>
-                  <TextInput
-                    style={[styles.keyInput, { marginBottom: 16 }]}
-                    keyboardType="number-pad"
-                    value={contestFee}
-                    onChangeText={setContestFee}
-                    placeholder="e.g. 5000"
-                  />
-
-                  <Text style={[styles.settingsLabel, { marginTop: 8 }]}>PRIVATE INVITES (OPTIONAL NPUBS)</Text>
-                  <Text style={styles.settingsHelp}>Leave blank for a Global Contest. Comma separated npubs to restrict entry.</Text>
-                  <TextInput
-                    style={[styles.keyInput, { marginBottom: 16, marginTop: 8, height: 60 }]}
-                    multiline
-                    placeholder="npub1..., npub1..."
-                    placeholderTextColor="#666"
-                    value={contestInvites}
-                    onChangeText={setContestInvites}
-                  />
-                </>
-              )}
-
-              <TouchableOpacity style={[styles.saveButton, { marginTop: 8 }]} onPress={async () => {
-                if (!schedName || !schedDate) {
-                  Alert.alert("Missing Fields", "Please fill in the Name and Date.");
-                  return;
-                }
-
-                if (schedType === 'ride' && !schedLocation) {
-                  Alert.alert("Missing Fields", "Please specify a location for the ride.");
-                  return;
-                }
-
-                try {
-                  let startUnix = Math.floor(schedDate.getTime() / 1000);
-
-                  if (schedType === 'ride') {
-                    let eventsToCreate = schedCadence === 'none' ? 1 : schedOccurrences;
-
-                    for (let i = 0; i < eventsToCreate; i++) {
-                      await publishScheduledRide(schedName, schedCadence !== 'none' ? `${schedDesc}\n\n(Recurring Ride)` : schedDesc, startUnix, schedLocation);
-
-                      if (schedCadence === 'weekly') {
-                        startUnix += 7 * 24 * 60 * 60;
-                      } else if (schedCadence === 'biweekly') {
-                        startUnix += 14 * 24 * 60 * 60;
-                      } else if (schedCadence === 'monthly') {
-                        startUnix += 28 * 24 * 60 * 60;
-                      }
-                    }
-                  } else {
-                    // Contest Publishing
-                    const endDaysInt = parseInt(contestEndDays) || 1;
-                    const endUnix = startUnix + endDaysInt * 24 * 60 * 60;
-                    const feeInt = parseInt(contestFee) || 0;
-                    const pubkeys = contestInvites.split(',').map(s => s.trim()).filter(s => s.startsWith('npub')); // rudimentary filter
-
-                    // In a real app we'd decode npubs to hex here. Assuming decode helper exists or is added soon.
-                    await publishContestEvent(schedName, schedDesc, startUnix, endUnix, contestParam, feeInt, pubkeys);
-                  }
-
-                  // Clear form BEFORE fetching feeds to ensure it closes even if relays are slow or error out.
-                  setSchedName('');
-                  setSchedDesc('');
-                  setSchedLocation('');
-                  setSchedCadence('none');
-                  setSchedOccurrences(2);
-                  setContestInvites('');
-                  setShowSchedule(false);
-
-                  Alert.alert("Success", `Published to Nostr!`);
-
-                  // Refresh feeds!
-                  try {
-                    if (schedType === 'ride') {
-                      const groupEvents = await fetchScheduledRides();
-                      setScheduledRides(groupEvents);
-                      setShowFeed(true); // Switch to feed to see it immediately
-                    } else {
-                      const contests = await fetchContests();
-                      setActiveContests(contests);
-                      setShowFeed(true);
-                    }
-                  } catch (fetchErr) {
-                    console.error("Failed to refresh feeds after publish", fetchErr);
-                  }
-                } catch (e: any) {
-                  Alert.alert("Error", e.message);
-                }
-              }}>
-                <Text style={styles.saveButtonText}>{schedType === 'ride' ? 'PUBLISH SCHEDULED RIDE' : 'CREATE CONTEST'}</Text>
+            <View style={{ flexDirection: 'row', marginBottom: 16, gap: 10 }}>
+              <TouchableOpacity style={{ flex: 1, backgroundColor: schedType === 'ride' ? '#00ffaa' : 'rgba(255,255,255,0.1)', paddingVertical: 10, borderRadius: 8, alignItems: 'center' }} onPress={() => setSchedType('ride')}>
+                <Text style={{ color: schedType === 'ride' ? '#000' : '#fff', fontWeight: 'bold' }}>GROUP RIDE</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={{ flex: 1, backgroundColor: schedType === 'contest' ? '#eab308' : 'rgba(255,255,255,0.1)', paddingVertical: 10, borderRadius: 8, alignItems: 'center' }} onPress={() => setSchedType('contest')}>
+                <Text style={{ color: schedType === 'contest' ? '#000' : '#fff', fontWeight: 'bold' }}>CONTEST</Text>
               </TouchableOpacity>
             </View>
-          </ScrollView>
-        </KeyboardAvoidingView>
-      )
+
+            <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
+              <View style={styles.settingsSection}>
+                <Text style={styles.settingsLabel}>{schedType === 'ride' ? 'RIDE NAME' : 'CONTEST TITLE'}</Text>
+                <TextInput
+                  style={styles.keyInput}
+                  placeholder="e.g. Saturday Morning Coffee Ride"
+                  placeholderTextColor="rgba(255,255,255,0.3)"
+                  value={schedName}
+                  onChangeText={setSchedName}
+                />
+                <Text style={styles.settingsLabel}>DESCRIPTION</Text>
+                <TextInput
+                  style={[styles.keyInput, { height: 80 }]} placeholder="Pace, expected distance, drop/no-drop..."
+                  placeholderTextColor="rgba(255,255,255,0.3)"
+                  multiline
+                  value={schedDesc}
+                  onChangeText={setSchedDesc}
+                />
+                <Text style={styles.settingsLabel}>START TIME/DATE</Text>
+                <View style={{ flexDirection: 'row', gap: 10, marginBottom: 16 }}>
+                  <TouchableOpacity style={[styles.keyInput, { flex: 1, alignItems: 'center', justifyContent: 'center' }]} onPress={() => setShowDatePicker(true)}>
+                    <Text style={{ color: '#fff' }}>{schedDate.toLocaleDateString()}</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={[styles.keyInput, { flex: 1, alignItems: 'center', justifyContent: 'center' }]} onPress={() => setShowTimePicker(true)}>
+                    <Text style={{ color: '#fff' }}>{schedDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
+                  </TouchableOpacity>
+                </View>
+
+                {showDatePicker && (
+                  <DateTimePicker
+                    value={schedDate}
+                    mode="date"
+                    display="default"
+                    onChange={(event: DateTimePickerEvent, selectedDate?: Date) => {
+                      setShowDatePicker(Platform.OS === 'ios');
+                      if (selectedDate) setSchedDate(selectedDate);
+                    }}
+                  />
+                )}
+                {showTimePicker && (
+                  <DateTimePicker
+                    value={schedDate}
+                    mode="time"
+                    display="default"
+                    onChange={(event: DateTimePickerEvent, selectedDate?: Date) => {
+                      setShowTimePicker(Platform.OS === 'ios');
+                      if (selectedDate) setSchedDate(selectedDate);
+                    }}
+                  />
+                )}
+
+                {schedType === 'ride' && (
+                  <>
+                    <Text style={styles.settingsLabel}>MEETING LOCATION</Text>
+                    <View style={{ flexDirection: 'row', gap: 10 }}>
+                      <TextInput
+                        style={[styles.keyInput, { flex: 1, marginBottom: 0 }]}
+                        placeholder="e.g. 123 Main St Coffee Shop"
+                        placeholderTextColor="rgba(255,255,255,0.3)"
+                        value={schedLocation}
+                        onChangeText={setSchedLocation}
+                      />
+                      <TouchableOpacity
+                        style={{ backgroundColor: 'rgba(255,255,255,0.1)', paddingHorizontal: 16, borderRadius: 8, justifyContent: 'center', borderColor: 'rgba(255,255,255,0.3)', borderWidth: 1 }}
+                        disabled={isGettingLocation}
+                        onPress={async () => {
+                          setIsGettingLocation(true);
+                          try {
+                            let loc = await Location.getLastKnownPositionAsync();
+                            if (!loc) loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Low });
+                            if (loc) {
+                              setSchedLocation(`geo:${loc.coords.latitude.toFixed(5)},${loc.coords.longitude.toFixed(5)}`);
+                            }
+                          } catch (e) {
+                            Alert.alert("Location Error", "Could not fetch current GPS location.");
+                          }
+                          setIsGettingLocation(false);
+                        }}
+                      >
+                        {isGettingLocation ? <ActivityIndicator color="#00ffaa" size="small" /> : <Text style={{ color: '#00ffaa' }}>Use GPS</Text>}
+                      </TouchableOpacity>
+                    </View>
+
+                    <Text style={[styles.settingsLabel, { marginTop: 16 }]}>REPEAT CADENCE</Text>
+                    <View style={{ flexDirection: 'row', gap: 5, marginBottom: 16 }}>
+                      {[
+                        { id: 'none', label: 'None' },
+                        { id: 'weekly', label: 'Weekly' },
+                        { id: 'biweekly', label: 'Bi-Weekly' },
+                        { id: 'monthly', label: 'Monthly' }
+                      ].map(opt => (
+                        <TouchableOpacity
+                          key={opt.id}
+                          style={{
+                            flex: 1, backgroundColor: schedCadence === opt.id ? '#00ffaa' : 'rgba(255,255,255,0.1)',
+                            paddingVertical: 12, borderRadius: 8, alignItems: 'center', borderColor: 'rgba(255,255,255,0.3)', borderWidth: 1
+                          }}
+                          onPress={() => setSchedCadence(opt.id as any)}
+                        >
+                          <Text style={{ color: schedCadence === opt.id ? '#000' : '#fff', fontWeight: 'bold', fontSize: 12 }}>
+                            {opt.label}
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+
+                    {schedCadence !== 'none' && (
+                      <View style={{ marginBottom: 16 }}>
+                        <Text style={styles.settingsLabel}>NUMBER OF EVENTS (MAX 6)</Text>
+                        <View style={{ flexDirection: 'row', gap: 10, alignItems: 'center' }}>
+                          {[2, 3, 4, 5, 6].map(num => (
+                            <TouchableOpacity
+                              key={num}
+                              style={{
+                                flex: 1, backgroundColor: schedOccurrences === num ? '#00ffaa' : 'rgba(255,255,255,0.1)',
+                                paddingVertical: 12, borderRadius: 8, alignItems: 'center', borderColor: 'rgba(255,255,255,0.3)', borderWidth: 1
+                              }}
+                              onPress={() => setSchedOccurrences(num)}
+                            >
+                              <Text style={{ color: schedOccurrences === num ? '#000' : '#fff', fontWeight: 'bold' }}>{num}</Text>
+                            </TouchableOpacity>
+                          ))}
+                        </View>
+                      </View>
+                    )}
+                  </>
+                )}
+
+                {schedType === 'contest' && (
+                  <>
+                    <Text style={[styles.settingsLabel, { marginTop: 16 }]}>CONTEST DURATION (DAYS)</Text>
+                    <TextInput
+                      style={[styles.keyInput, { marginBottom: 16 }]}
+                      keyboardType="number-pad"
+                      value={contestEndDays}
+                      onChangeText={setContestEndDays}
+                    />
+
+                    <Text style={[styles.settingsLabel, { marginTop: 8 }]}>WINNING METRIC</Text>
+                    <View style={{ flexDirection: 'row', gap: 5, marginBottom: 16 }}>
+                      {[
+                        { id: 'max_distance', label: 'Furthest' },
+                        { id: 'max_elevation', label: 'Elevation' },
+                        { id: 'fastest_mile', label: 'Fastest' }
+                      ].map(opt => (
+                        <TouchableOpacity
+                          key={opt.id}
+                          style={{
+                            flex: 1, backgroundColor: contestParam === opt.id ? '#00ffaa' : 'rgba(255,255,255,0.1)',
+                            paddingVertical: 12, borderRadius: 8, alignItems: 'center', borderColor: 'rgba(255,255,255,0.3)', borderWidth: 1
+                          }}
+                          onPress={() => setContestParam(opt.id as any)}
+                        >
+                          <Text style={{ color: contestParam === opt.id ? '#000' : '#fff', fontWeight: 'bold', fontSize: 12 }}>
+                            {opt.label}
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+
+                    <Text style={[styles.settingsLabel, { marginTop: 8 }]}>ENTRY FEE (SATS - ZAP TO ENTER)</Text>
+                    <TextInput
+                      style={[styles.keyInput, { marginBottom: 16 }]}
+                      keyboardType="number-pad"
+                      value={contestFee}
+                      onChangeText={setContestFee}
+                      placeholder="e.g. 5000"
+                    />
+
+                    <Text style={[styles.settingsLabel, { marginTop: 8 }]}>PRIVATE INVITES (OPTIONAL NPUBS)</Text>
+                    <Text style={styles.settingsHelp}>Leave blank for a Global Contest. Comma separated npubs to restrict entry.</Text>
+                    <TextInput
+                      style={[styles.keyInput, { marginBottom: 16, marginTop: 8, height: 60 }]}
+                      multiline
+                      placeholder="npub1..., npub1..."
+                      placeholderTextColor="#666"
+                      value={contestInvites}
+                      onChangeText={setContestInvites}
+                    />
+                  </>
+                )}
+
+                <TouchableOpacity style={[styles.saveButton, { marginTop: 8 }]} onPress={async () => {
+                  if (!schedName || !schedDate) {
+                    Alert.alert("Missing Fields", "Please fill in the Name and Date.");
+                    return;
+                  }
+
+                  if (schedType === 'ride' && !schedLocation) {
+                    Alert.alert("Missing Fields", "Please specify a location for the ride.");
+                    return;
+                  }
+
+                  try {
+                    let startUnix = Math.floor(schedDate.getTime() / 1000);
+
+                    if (schedType === 'ride') {
+                      let eventsToCreate = schedCadence === 'none' ? 1 : schedOccurrences;
+
+                      for (let i = 0; i < eventsToCreate; i++) {
+                        await publishScheduledRide(schedName, schedCadence !== 'none' ? `${schedDesc}\n\n(Recurring Ride)` : schedDesc, startUnix, schedLocation);
+
+                        if (schedCadence === 'weekly') {
+                          startUnix += 7 * 24 * 60 * 60;
+                        } else if (schedCadence === 'biweekly') {
+                          startUnix += 14 * 24 * 60 * 60;
+                        } else if (schedCadence === 'monthly') {
+                          startUnix += 28 * 24 * 60 * 60;
+                        }
+                      }
+                    } else {
+                      // Contest Publishing
+                      const endDaysInt = parseInt(contestEndDays) || 1;
+                      const endUnix = startUnix + endDaysInt * 24 * 60 * 60;
+                      const feeInt = parseInt(contestFee) || 0;
+                      const pubkeys = contestInvites.split(',').map(s => s.trim()).filter(s => s.startsWith('npub')); // rudimentary filter
+
+                      // In a real app we'd decode npubs to hex here. Assuming decode helper exists or is added soon.
+                      await publishContestEvent(schedName, schedDesc, startUnix, endUnix, contestParam, feeInt, pubkeys);
+                    }
+
+                    // Clear form BEFORE fetching feeds to ensure it closes even if relays are slow or error out.
+                    setSchedName('');
+                    setSchedDesc('');
+                    setSchedLocation('');
+                    setSchedCadence('none');
+                    setSchedOccurrences(2);
+                    setContestInvites('');
+                    setShowSchedule(false);
+
+                    Alert.alert("Success", `Published to Nostr!`);
+
+                    // Refresh feeds!
+                    try {
+                      if (schedType === 'ride') {
+                        const groupEvents = await fetchScheduledRides();
+                        setScheduledRides(groupEvents);
+                        setShowFeed(true); // Switch to feed to see it immediately
+                      } else {
+                        const contests = await fetchContests();
+                        setActiveContests(contests);
+                        setShowFeed(true);
+                      }
+                    } catch (fetchErr) {
+                      console.error("Failed to refresh feeds after publish", fetchErr);
+                    }
+                  } catch (e: any) {
+                    Alert.alert("Error", e.message);
+                  }
+                }}>
+                  <Text style={styles.saveButtonText}>{schedType === 'ride' ? 'PUBLISH SCHEDULED RIDE' : 'CREATE CONTEST'}</Text>
+                </TouchableOpacity>
+              </View>
+            </ScrollView>
+          </KeyboardAvoidingView>
+        )
       }
 
       {/* Contest Leaderboard Overlay */}
