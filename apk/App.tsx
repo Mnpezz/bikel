@@ -148,7 +148,10 @@ export default function App() {
   useEffect(() => {
     if (showDiscussion && selectedDiscussionRide) {
       setComments([]);
-      fetchComments(selectedDiscussionRide.id).then(setComments);
+      fetchComments(selectedDiscussionRide.id).then((fetched) => {
+        setComments(fetched);
+        loadAuthorProfiles(fetched.map(c => c.hexPubkey || c.pubkey)).catch(console.error);
+      });
     }
   }, [showDiscussion, selectedDiscussionRide]);
 
@@ -814,7 +817,7 @@ export default function App() {
                                   }}>
                                     <Text style={{ color: '#00ccff', fontSize: 11, fontWeight: 'bold' }}>💬 Discuss</Text>
                                   </TouchableOpacity>
-                                  <TouchableOpacity onPress={() => setActiveDMUser(r.pubkey)}>
+                                  <TouchableOpacity onPress={() => setActiveDMUser(r.hexPubkey)}>
                                     <Text style={{ color: '#00ccff', fontSize: 11, textDecorationLine: 'underline' }}>Message Org</Text>
                                   </TouchableOpacity>
                                   {isNWCConnected && (
@@ -1703,7 +1706,10 @@ export default function App() {
                   const success = await publishComment(selectedDiscussionRide.id, newComment.trim());
                   if (success) {
                     setNewComment('');
-                    fetchComments(selectedDiscussionRide.id).then(setComments);
+                    fetchComments(selectedDiscussionRide.id).then(fetched => {
+                      setComments(fetched);
+                      loadAuthorProfiles(fetched.map(c => c.hexPubkey || c.pubkey)).catch(console.error);
+                    });
                   } else {
                     Alert.alert("Error", "Failed to publish comment");
                   }

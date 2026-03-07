@@ -901,6 +901,7 @@ export async function fetchRideLeaderboard(attendees: string[], startTime: numbe
 export interface RideComment {
     id: string;
     pubkey: string;
+    hexPubkey?: string;
     content: string;
     createdAt: number;
 }
@@ -921,6 +922,7 @@ export async function fetchComments(eventId: string): Promise<RideComment[]> {
         comments.push({
             id: event.id,
             pubkey: event.author?.npub || event.pubkey,
+            hexPubkey: event.pubkey,
             content: event.content,
             createdAt: event.created_at || Math.floor(Date.now() / 1000)
         });
