@@ -345,6 +345,67 @@ export async function fetchMyRides(): Promise<RideEvent[]> {
     return rides.sort((a, b) => b.time - a.time);
 }
 
+export async function fetchUserRides(targetPubkey: string): Promise<RideEvent[]> {
+    const ndk = await connectNDK();
+
+    const filter = {
+        kinds: [33301 as any],
+        authors: [targetPubkey],
+        limit: 50
+    };
+
+    console.log(`[Nostr] Fetching rides for user: ${targetPubkey.substring(0, 8)}`);
+    const events = await ndk.fetchEvents(filter);
+
+    const rides: RideEvent[] = [];
+
+    for (const event of events) {
+        try {
+            const distance = event.getMatchingTags("distance")[0]?.[1] || "0";
+            const durationSecs = parseInt(event.getMatchingTags("duration")[0]?.[1] || "0", 10);
+            const visibility = event.getMatchingTags("visibility")[0]?.[1] || "full";
+            const title = event.getMatchingTags("title")[0]?.[1];
+            const description = event.getMatchingTags("summary")[0]?.[1];
+            const image = event.getMatchingTags("image")[0]?.[1];
+
+            const mins = Math.floor(durationSecs / 60);
+            const secs = durationSecs % 60;
+            const durationStr = `${mins}m ${secs}s`;
+
+            let route: number[][] = [];
+            if (visibility === 'full' && event.content) {
+                try {
+                    const parsed = JSON.parse(event.content);
+                    if (parsed.route && Array.isArray(parsed.route)) {
+                        route = parsed.route;
+                    }
+                } catch (e) {
+                    // Content might not be JSON or might be encrypted
+                }
+            }
+
+            rides.push({
+                id: event.id,
+                pubkey: event.author.npub,
+                hexPubkey: event.pubkey,
+                time: event.created_at || Math.floor(Date.now() / 1000),
+                distance,
+                duration: durationStr,
+                visibility,
+                route,
+                kind: 33301,
+                title,
+                description,
+                image,
+            });
+        } catch (e) {
+            console.warn("Failed to parse user event", event.id);
+        }
+    }
+
+    return rides.sort((a, b) => b.time - a.time);
+}
+
 /**
  * Retrieves the raw private key hex string for exporting.
  */

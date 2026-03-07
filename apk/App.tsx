@@ -5,7 +5,7 @@ import { LeafletView, MapLayerType, MapShapeType } from 'react-native-leaflet-vi
 import { Bike, Square, Play, Zap, History, Settings, CalendarPlus, X, MessageSquare, Globe, LocateFixed } from 'lucide-react-native';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import * as Clipboard from 'expo-clipboard';
-import { connectNDK, publishRide, fetchMyRides, getPrivateKeyNsec, getPublicKeyNpub, getPublicKeyHex, setPrivateKey, publishScheduledRide, publishContestEvent, fetchContests, fetchRecentRides, fetchScheduledRides, publishRSVP, connectNWC, zapRideEvent, fetchComments, publishComment, fetchDMs, sendDM, publishProfile, fetchRideLeaderboard, ESCROW_PUBKEY, RideEvent, ScheduledRideEvent, ContestEvent, RideComment, DMessage } from './src/lib/nostr';
+import { connectNDK, publishRide, fetchMyRides, fetchUserRides, getPrivateKeyNsec, getPublicKeyNpub, getPublicKeyHex, setPrivateKey, publishScheduledRide, publishContestEvent, fetchContests, fetchRecentRides, fetchScheduledRides, publishRSVP, connectNWC, zapRideEvent, fetchComments, publishComment, fetchDMs, sendDM, publishProfile, fetchRideLeaderboard, ESCROW_PUBKEY, RideEvent, ScheduledRideEvent, ContestEvent, RideComment, DMessage } from './src/lib/nostr';
 import * as SecureStore from 'expo-secure-store';
 
 export default function App() {
@@ -32,6 +32,11 @@ export default function App() {
   const [feedTab, setFeedTab] = useState<'contests' | 'rides' | 'feed'>('feed');
   const [showSettings, setShowSettings] = useState(false);
   const [showSchedule, setShowSchedule] = useState(false);
+
+  // Author Profile States
+  const [viewingAuthor, setViewingAuthor] = useState<string | null>(null);
+  const [authorRides, setAuthorRides] = useState<RideEvent[]>([]);
+  const [isLoadingAuthor, setIsLoadingAuthor] = useState(false);
 
   // Profile Editor States
   const [editName, setEditName] = useState('');
@@ -1268,24 +1273,89 @@ export default function App() {
                 {contestLeaderboard.length === 0 ? (
                   <Text style={styles.emptyText}>No rides submitted yet for this contest.</Text>
                 ) : (
-                  contestLeaderboard.map((lb, index) => (
-                    <View key={lb.pubkey} style={[styles.historyCard, index === 0 ? { borderColor: '#eab308', borderWidth: 1 } : {}]}>
-                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <Text style={{ color: index === 0 ? '#eab308' : '#fff', fontWeight: 'bold', fontSize: 16 }}>
-                          #{index + 1} {lb.pubkey.substring(0, 8)}...
-                        </Text>
-                        <Text style={{ color: '#00ffaa', fontSize: 16, fontWeight: 'bold' }}>
-                          {lb.value.toFixed(1)} {selectedContest.parameter.includes('distance') ? 'mi' : ''}
-                        </Text>
-                      </View>
-                    </View>
-                  ))
+                  contestLeaderboard.map((lb, index) => {
+                    const profile = profiles[lb.pubkey];
+                    const displayName = profile?.nip05 || profile?.name || lb.pubkey.substring(0, 8) + '...';
+
+                    return (
+                      <TouchableOpacity
+                        key={lb.pubkey}
+                        style={[styles.historyCard, index === 0 ? { borderColor: '#eab308', borderWidth: 1 } : {}]}
+                        onPress={() => {
+                          setViewingAuthor(lb.pubkey);
+                          setIsLoadingAuthor(true);
+                          fetchUserRides(lb.pubkey).then(setAuthorRides).finally(() => setIsLoadingAuthor(false));
+                        }}
+                      >
+                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <Text style={{ color: index === 0 ? '#eab308' : '#fff', fontWeight: 'bold', fontSize: 16 }}>
+                            #{index + 1} {displayName}
+                          </Text>
+                          <Text style={{ color: '#00ffaa', fontSize: 16, fontWeight: 'bold' }}>
+                            {lb.value.toFixed(1)} {selectedContest.parameter.includes('distance') ? 'mi' : ''}
+                          </Text>
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  })
                 )}
               </ScrollView>
             )}
           </View>
         )
       }
+
+      {/* Author Profile Overlay */}
+      {viewingAuthor && (
+        <View style={styles.historyOverlay}>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+            <Text style={styles.historyTitle}>Rider Profile</Text>
+            <TouchableOpacity onPress={() => { setViewingAuthor(null); setAuthorRides([]); }} style={{ padding: 4 }}>
+              <X size={24} color="#fff" />
+            </TouchableOpacity>
+          </View>
+
+          <View style={{ alignItems: 'center', marginBottom: 24, backgroundColor: 'rgba(255,255,255,0.05)', padding: 16, borderRadius: 12 }}>
+            <Image source={profiles[viewingAuthor]?.picture ? { uri: profiles[viewingAuthor].picture } : require('./assets/bikelLogo.jpg')} style={{ width: 80, height: 80, borderRadius: 40, marginBottom: 12, borderWidth: 2, borderColor: '#00ffaa' }} />
+            <Text style={{ color: '#00ffaa', fontWeight: 'bold', fontSize: 20 }}>
+              {profiles[viewingAuthor]?.nip05 || profiles[viewingAuthor]?.name || viewingAuthor.substring(0, 10)}
+            </Text>
+            {profiles[viewingAuthor]?.about && <Text style={{ color: '#aaa', fontSize: 14, textAlign: 'center', marginTop: 8 }}>{profiles[viewingAuthor].about}</Text>}
+            <TouchableOpacity
+              style={{ marginTop: 16, backgroundColor: '#00ccff', paddingHorizontal: 20, paddingVertical: 10, borderRadius: 20, flexDirection: 'row', alignItems: 'center', gap: 6 }}
+              onPress={() => { setViewingAuthor(null); setActiveDMUser(viewingAuthor); }}
+            >
+              <MessageSquare size={16} color="#000" />
+              <Text style={{ color: '#000', fontWeight: 'bold' }}>MESSAGE RIDER</Text>
+            </TouchableOpacity>
+          </View>
+
+          <Text style={{ color: '#00ffaa', fontSize: 16, fontWeight: 'bold', marginBottom: 12 }}>Tracked Routes</Text>
+          {isLoadingAuthor ? (
+            <ActivityIndicator size="large" color="#00ffaa" style={{ marginTop: 20 }} />
+          ) : (
+            <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
+              {authorRides.length === 0 ? (
+                <Text style={styles.emptyText}>No public routes tracked yet.</Text>
+              ) : (
+                authorRides.map(r => (
+                  <View key={r.id} style={styles.historyCard}>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 }}>
+                      <Text style={{ color: '#00ffaa', fontWeight: 'bold' }}>{r.title || 'Untitled Ride'}</Text>
+                      <Text style={{ color: '#888', fontSize: 12 }}>{new Date(r.time * 1000).toLocaleDateString()}</Text>
+                    </View>
+                    {r.description && <Text style={{ color: '#aaa', fontSize: 12, marginBottom: 8 }}>{r.description}</Text>}
+                    <View style={{ flexDirection: 'row', gap: 12 }}>
+                      <Text style={{ color: '#fff', fontSize: 13 }}>🚴 {r.distance} mi</Text>
+                      <Text style={{ color: '#fff', fontSize: 13 }}>⏱️ {r.duration}</Text>
+                    </View>
+                  </View>
+                ))
+              )}
+            </ScrollView>
+          )}
+        </View>
+      )}
 
       {/* Stats Overlay when tracking */}
       <View style={[styles.statsOverlay, { opacity: isTracking ? 1 : 0 }]} pointerEvents={isTracking ? 'auto' : 'none'}>
