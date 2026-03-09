@@ -29,7 +29,6 @@ export async function connectNDK(): Promise<NDK> {
 export async function loginNip07(): Promise<NDKUser | null> {
     const ndk = await connectNDK();
 
-    // Check if the nostr extension exists in the browser
     if (!(window as any).nostr) {
         console.error("NIP-07 extension not found");
         return null;
@@ -38,11 +37,8 @@ export async function loginNip07(): Promise<NDKUser | null> {
     try {
         const signer = new NDKNip07Signer();
         ndk.signer = signer;
-
-        // Wait for user to approve the extension popup
         const user = await signer.user();
         await user.fetchProfile();
-
         return user;
     } catch (e) {
         console.error("NIP-07 login failed", e);
@@ -55,10 +51,7 @@ let nwcWallet: NDKNWCWallet | null = null;
 export async function connectNWC(pairingCode: string): Promise<boolean> {
     const ndk = await connectNDK();
     try {
-        // Connect via NIP-47 Wallet Connect URI
         nwcWallet = new NDKNWCWallet(ndk as any, { pairingCode });
-
-        // Wait for ready event to ensure connection is valid
         await new Promise<void>((resolve, reject) => {
             const timeout = setTimeout(() => reject("NWC connection timeout"), 10000);
             nwcWallet!.once("ready", () => {
@@ -66,8 +59,6 @@ export async function connectNWC(pairingCode: string): Promise<boolean> {
                 resolve();
             });
         });
-
-        // Assign wallet to NDK so zaps are routed through it automatically
         (ndk as any).wallet = nwcWallet;
         console.log("[NWC] Wallet connected and ready");
         return true;
@@ -88,14 +79,11 @@ export async function zapRideEvent(eventId: string, targetPubkey: string, target
     let lastNotice = "";
 
     try {
-        // Construct the event locally to avoid slow network fetches
         const event = new NDKEvent(ndk);
         event.id = eventId;
         event.pubkey = targetPubkey;
         event.kind = targetKind;
 
-        // Ensure a signer exists for the Zap Request (Kind 9734) to avoid "Signer required" failures.
-        // If the user isn't logged in with NIP-07, generate an anonymous ephemeral signer.
         let zapSigner = ndk.signer;
         if (!zapSigner) {
             zapSigner = NDKPrivateKeySigner.generate();
@@ -114,15 +102,8 @@ export async function zapRideEvent(eventId: string, targetPubkey: string, target
             lastNotice = msg;
         });
 
-        // Fire off the zap request to the NWC wallet natively in the background without waiting. 
-        // We DO NOT await this Promise because NWC extensions perfectly processing the payment
-        // routinely fail to resolve the Promise port gracefully, causing the UI to hang forever!
-        zapper.zap().catch(e => console.warn(`[Zap - Web] Background Zap Promise Rejection (Ignored to prevent UI freezing):`, e));
-
-        console.log(`[Zap - Web] Payment dispatched to Lightning Network! Returning Pseudo-Success instantly.`);
-
-        // Return pseudo-success immediately so the user can continue using the app
-        // without waiting 30+ seconds for a public 9735 receipt that their provider might ignore.
+        zapper.zap().catch(e => console.warn(`[Zap - Web] Background Zap Promise Rejection (Ignored):`, e));
+        console.log(`[Zap - Web] Payment dispatched. Returning Pseudo-Success.`);
         return true;
     } catch (e: any) {
         console.error("[Zap - Web] Failed to zap event", e);
@@ -136,6 +117,33 @@ export async function zapRideEvent(eventId: string, targetPubkey: string, target
     }
 }
 
+// ── Kind 5 Deletion ────────────────────────────────────
+export async function deleteRide(eventId: string): Promise<boolean> {
+    const ndk = await connectNDK();
+    if (!ndk.signer) {
+        console.error("[Nostr] Cannot delete without a signer — user must be logged in");
+        return false;
+    }
+
+    try {
+        const deleteEvent = new NDKEvent(ndk);
+        deleteEvent.kind = 5;
+        deleteEvent.content = "Ride deleted by author";
+        deleteEvent.tags = [
+            ['e', eventId],
+            ['k', '33301'], // kind of the event being deleted
+        ];
+
+        await deleteEvent.publish();
+        console.log(`[Nostr] Kind 5 delete published for event ${eventId}`);
+        return true;
+    } catch (e) {
+        console.error("[Nostr] Failed to publish delete event", e);
+        return false;
+    }
+}
+
+// ── RideEvent ──────────────────────────────────────────
 export interface RideEvent {
     id: string;
     pubkey: string;
@@ -144,32 +152,28 @@ export interface RideEvent {
     distance: string;
     duration: string;
     visibility: string;
-    route: number[][]; // [lat, lng][]
+    route: number[][];
     title?: string;
     description?: string;
     image?: string;
     kind: 33301;
+    confidence?: number; // 0.0 – 1.0, parsed from 'confidence' tag
 }
 
 export async function fetchRecentRides(): Promise<RideEvent[]> {
     const ndk = await connectNDK();
 
     const filters: NDKFilter[] = [
-        {
-            kinds: [33301 as any],
-            limit: 100,
-        }
+        { kinds: [33301 as any], limit: 100 }
     ];
 
     console.log("[Nostr] Fetching recent Bikel rides...");
     const events = await ndk.fetchEvents(filters);
-
     console.log(`[Nostr] Fetched ${events.size} raw 33301 events, filtering locally...`);
 
     const rides: RideEvent[] = [];
 
     for (const event of events) {
-        // Filter locally because relays often don't index custom tags on 3xxxx kinds
         const hasBikelClient = event.getMatchingTags("client").some(t => t[1] === "bikel");
         const hasCyclingTag = event.getMatchingTags("t").some(t => ["cycling", "bikel", "bikeride"].includes(t[1]));
         if (!hasBikelClient && !hasCyclingTag) continue;
@@ -179,11 +183,11 @@ export async function fetchRecentRides(): Promise<RideEvent[]> {
             const durationSecs = parseInt(event.getMatchingTags("duration")[0]?.[1] || "0", 10);
             const visibility = event.getMatchingTags("visibility")[0]?.[1] || "full";
             const title = event.getMatchingTags("title")[0]?.[1];
-
             const description = event.getMatchingTags("summary")[0]?.[1] || event.getMatchingTags("description")[0]?.[1];
             const image = event.getMatchingTags("image")[0]?.[1];
+            const confidenceRaw = event.getMatchingTags("confidence")[0]?.[1];
+            const confidence = confidenceRaw ? parseFloat(confidenceRaw) : undefined;
 
-            // Format duration into readable string
             const mins = Math.floor(durationSecs / 60);
             const secs = durationSecs % 60;
             const durationStr = `${mins}m ${secs}s`;
@@ -192,12 +196,8 @@ export async function fetchRecentRides(): Promise<RideEvent[]> {
             if (visibility === 'full' && event.content) {
                 try {
                     const parsed = JSON.parse(event.content);
-                    if (parsed.route && Array.isArray(parsed.route)) {
-                        route = parsed.route;
-                    }
-                } catch (e) {
-                    // content not json or encrypted
-                }
+                    if (parsed.route && Array.isArray(parsed.route)) route = parsed.route;
+                } catch (e) { }
             }
 
             rides.push({
@@ -212,14 +212,14 @@ export async function fetchRecentRides(): Promise<RideEvent[]> {
                 title,
                 description,
                 image,
-                kind: 33301
+                kind: 33301,
+                confidence,
             });
         } catch (e) {
             console.warn("Failed to parse event", event.id);
         }
     }
 
-    // Sort by newest first
     return rides.sort((a, b) => b.time - a.time);
 }
 
@@ -248,8 +248,9 @@ export async function fetchUserRides(pubkeyOrNpub: string): Promise<RideEvent[]>
             const distance = event.getMatchingTags("distance")[0]?.[1] || "0";
             const durationSecs = parseInt(event.getMatchingTags("duration")[0]?.[1] || "0", 10);
             const visibility = event.getMatchingTags("visibility")[0]?.[1] || "full";
+            const confidenceRaw = event.getMatchingTags("confidence")[0]?.[1];
+            const confidence = confidenceRaw ? parseFloat(confidenceRaw) : undefined;
 
-            // Format duration into readable string
             const mins = Math.floor(durationSecs / 60);
             const secs = durationSecs % 60;
             const durationStr = `${mins}m ${secs}s`;
@@ -258,12 +259,8 @@ export async function fetchUserRides(pubkeyOrNpub: string): Promise<RideEvent[]>
             if (visibility === 'full' && event.content) {
                 try {
                     const parsed = JSON.parse(event.content);
-                    if (parsed.route && Array.isArray(parsed.route)) {
-                        route = parsed.route;
-                    }
-                } catch (e) {
-                    // content not json or encrypted
-                }
+                    if (parsed.route && Array.isArray(parsed.route)) route = parsed.route;
+                } catch (e) { }
             }
 
             rides.push({
@@ -275,14 +272,14 @@ export async function fetchUserRides(pubkeyOrNpub: string): Promise<RideEvent[]>
                 duration: durationStr,
                 visibility,
                 route,
-                kind: 33301
+                kind: 33301,
+                confidence,
             });
         } catch (e) {
             console.warn("Failed to parse user event", event.id);
         }
     }
 
-    // Sort by newest first
     return rides.sort((a, b) => b.time - a.time);
 }
 
@@ -309,10 +306,7 @@ export async function fetchScheduledRides(): Promise<ScheduledRideEvent[]> {
     const ndk = await connectNDK();
 
     const filters: NDKFilter[] = [
-        {
-            kinds: [31923 as any],
-            limit: 100,
-        }
+        { kinds: [31923 as any], limit: 100 }
     ];
 
     console.log("[Nostr] Fetching scheduled Bikel & Cycling rides (Kind 31923)...");
@@ -338,8 +332,7 @@ export async function fetchScheduledRides(): Promise<ScheduledRideEvent[]> {
             const aTag = `31923:${event.pubkey}:${dTag}`;
             aTagsToFetch.push(aTag);
 
-            // Only include rides in the future (or very recently started)
-            if (startTime > (Date.now() / 1000) - (86400 * 30)) { // show up to 30 days old just in case
+            if (startTime > (Date.now() / 1000) - (86400 * 30)) {
                 let parsedRoute: number[][] = [];
                 const routeTag = event.getMatchingTags("route")[0]?.[1];
                 if (routeTag) {
@@ -384,7 +377,7 @@ export async function fetchScheduledRides(): Promise<ScheduledRideEvent[]> {
 
         for (const rsvp of rsvpEvents) {
             const aTagMatch = rsvp.getMatchingTags("a")[0]?.[1];
-            const lTagStatus = rsvp.getMatchingTags("l")[0]?.[1]; // Should be "accepted", "declined", "tentative"
+            const lTagStatus = rsvp.getMatchingTags("l")[0]?.[1];
 
             if (aTagMatch && lTagStatus === "accepted") {
                 const ride = scheduledRides.find(r => `31923:${r.hexPubkey}:${r.dTag}` === aTagMatch);
@@ -395,7 +388,6 @@ export async function fetchScheduledRides(): Promise<ScheduledRideEvent[]> {
         }
     }
 
-    // Sort by soonest upcoming first
     return scheduledRides.sort((a, b) => a.startTime - b.startTime);
 }
 
@@ -408,15 +400,12 @@ export async function publishRSVP(ride: ScheduledRideEvent): Promise<boolean> {
 
     const event = new NDKEvent(ndk);
     event.kind = 31925;
-
     const aTag = `31923:${ride.hexPubkey}:${ride.dTag}`;
-
     event.tags = [
         ['a', aTag],
         ['l', 'accepted'],
         ['client', 'bikel']
     ];
-
     event.content = "";
 
     console.log('[Nostr] Signing and publishing RSVP event...');
@@ -460,7 +449,6 @@ export async function fetchComments(eventId: string): Promise<RideComment[]> {
         });
     }
 
-    // Sort oldest first for comment threads
     return comments.sort((a, b) => a.createdAt - b.createdAt);
 }
 
@@ -472,9 +460,8 @@ export async function publishComment(eventId: string, content: string): Promise<
     }
 
     const event = new NDKEvent(ndk);
-    event.kind = 1; // Standard Note
+    event.kind = 1;
     event.content = content;
-    // NIP-10 standard reply tags
     event.tags = [
         ['e', eventId, '', 'reply'],
         ['client', 'bikel']
@@ -517,7 +504,6 @@ export async function fetchDMs(withPubkey: string): Promise<DMessage[]> {
 
     console.log(`[Nostr] Fetching DMs between ${currentUser.pubkey} and ${hexPubkey}...`);
 
-    // Filter messages sent from us to them OR from them to us
     const filterSent: NDKFilter = {
         kinds: [4],
         authors: [currentUser.pubkey],
@@ -567,13 +553,13 @@ export async function sendDM(toPubkey: string, text: string): Promise<boolean> {
     }
 
     const event = new NDKEvent(ndk);
-    event.kind = 4; // NIP-04 Direct Message
+    event.kind = 4;
     event.content = text;
     event.tags = [['p', hexPubkey]];
 
     console.log('[Nostr] Encrypting and publishing DM...');
     try {
-        await event.encrypt(recipient, ndk.signer, 'nip04'); // Force NIP-04 for Kind 4
+        await event.encrypt(recipient, ndk.signer, 'nip04');
         await event.publish();
         console.log(`[Nostr] DM sent! ID: ${event.id}`);
         return true;
