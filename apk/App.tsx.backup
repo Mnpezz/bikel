@@ -233,7 +233,7 @@ export default function App() {
 
   useEffect(() => {
     loadFeeds();
-  }, []);
+  }, [showHistory, showFeed, showSchedule]);
 
   const getDistanceMiles = (lat1: number, lon1: number, lat2: number, lon2: number) => {
     const R = 3958.8;
