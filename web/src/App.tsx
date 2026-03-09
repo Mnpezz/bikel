@@ -763,12 +763,81 @@ function App() {
           <button className="close-panel-btn" onClick={() => setShowHowTo(false)}><X size={20} /></button>
         </div>
         <div style={{ color: '#ccc', lineHeight: 1.6 }}>
-          <h3 style={{ color: '#fff', fontSize: '18px', marginBottom: '12px', marginTop: '16px' }}>1. Get a Nostr Key</h3>
-          <p style={{ marginBottom: '24px' }}>To start posting your rides, you'll need a Nostr extension like nos2x or Alby. Click "Sign In" at the top right!</p>
-          <h3 style={{ color: '#fff', fontSize: '18px', marginBottom: '12px' }}>2. Record Your Rides</h3>
-          <p style={{ marginBottom: '24px' }}>Recording rides happens inside the Bikel Mobile App (available on Android). The app acts as an offline-first GPS tracker before compressing your routes into mathematical geometries.</p>
-          <h3 style={{ color: '#fff', fontSize: '18px', marginBottom: '12px' }}>3. Interact & Zap</h3>
-          <p style={{ marginBottom: '24px' }}>Click any ride on the map to view stats, leave comments, or send Bitcoin micro-payments (Zaps) to riders you support!</p>
+
+          {/* What is Nostr */}
+          <div style={{ background: 'rgba(0,255,170,0.05)', border: '1px solid rgba(0,255,170,0.15)', borderRadius: '10px', padding: '16px', marginBottom: '24px', marginTop: '8px' }}>
+            <h3 style={{ color: '#00ffaa', fontSize: '14px', letterSpacing: '1px', textTransform: 'uppercase', margin: '0 0 8px 0' }}>What is Nostr?</h3>
+            <p style={{ margin: 0, fontSize: '13px', color: '#aaa' }}>
+              Nostr is an open protocol where your identity is a cryptographic key pair — not a username owned by a company. Your <strong style={{ color: '#fff' }}>nsec</strong> (private key) signs your data, and your <strong style={{ color: '#fff' }}>npub</strong> (public key) is your address. No accounts, no servers, no lock-in.
+            </p>
+          </div>
+
+          {/* Step 1 */}
+          <div style={{ display: 'flex', gap: '14px', marginBottom: '20px' }}>
+            <div style={{ width: '28px', height: '28px', borderRadius: '50%', background: 'rgba(0,255,170,0.15)', border: '1px solid #00ffaa', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#00ffaa', fontWeight: 'bold', fontSize: '14px', flexShrink: 0, marginTop: '2px' }}>1</div>
+            <div>
+              <h3 style={{ color: '#fff', fontSize: '16px', margin: '0 0 6px 0' }}>Download the Bikel App</h3>
+              <p style={{ margin: '0 0 10px 0', fontSize: '13px' }}>
+                The easiest way to get started. The Android app automatically generates a Nostr key pair for you — no setup needed. Your keys are stored locally on your device.
+              </p>
+              <button
+                onClick={() => { setShowHowTo(false); setShowAppPromo(true); }}
+                style={{ background: 'rgba(0,255,170,0.15)', border: '1px solid rgba(0,255,170,0.4)', borderRadius: '8px', padding: '8px 16px', color: '#00ffaa', fontSize: '13px', fontWeight: 'bold', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px' }}
+              >
+                <Smartphone size={14} /> Get the Android APK →
+              </button>
+            </div>
+          </div>
+
+          {/* Step 2 */}
+          <div style={{ display: 'flex', gap: '14px', marginBottom: '20px' }}>
+            <div style={{ width: '28px', height: '28px', borderRadius: '50%', background: 'rgba(0,255,170,0.15)', border: '1px solid #00ffaa', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#00ffaa', fontWeight: 'bold', fontSize: '14px', flexShrink: 0, marginTop: '2px' }}>2</div>
+            <div>
+              <h3 style={{ color: '#fff', fontSize: '16px', margin: '0 0 6px 0' }}>Record & Publish Rides</h3>
+              <p style={{ margin: 0, fontSize: '13px' }}>
+                Open the app, tap <strong style={{ color: '#fff' }}>Start Ride</strong>, and go. GPS tracking runs in the background. When you stop, your route is compressed and broadcast to the Nostr network — visible on this map within seconds.
+              </p>
+            </div>
+          </div>
+
+          {/* Step 3 */}
+          <div style={{ display: 'flex', gap: '14px', marginBottom: '20px' }}>
+            <div style={{ width: '28px', height: '28px', borderRadius: '50%', background: 'rgba(0,255,170,0.15)', border: '1px solid #00ffaa', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#00ffaa', fontWeight: 'bold', fontSize: '14px', flexShrink: 0, marginTop: '2px' }}>3</div>
+            <div>
+              <h3 style={{ color: '#fff', fontSize: '16px', margin: '0 0 6px 0' }}>Sign In to This Site <span style={{ color: '#888', fontWeight: 'normal', fontSize: '13px' }}>(optional)</span></h3>
+              <p style={{ margin: '0 0 8px 0', fontSize: '13px' }}>
+                To comment, RSVP to group rides, or send Zaps from the web, you'll need a browser extension that holds your Nostr key:
+              </p>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                {[
+                  { name: 'Alby', desc: 'Browser extension + Lightning wallet', url: 'https://getalby.com' },
+                  { name: 'nos2x', desc: 'Lightweight key signer for Chrome', url: 'https://chrome.google.com/webstore/detail/nos2x/kpgefcfmnafjgpblomihpgmejjdanjjp' },
+                  { name: 'Nostore', desc: 'Key signer for Safari / iOS', url: 'https://apps.apple.com/app/nostore/id1666553677' },
+                ].map(ext => (
+                  <a key={ext.name} href={ext.url} target="_blank" rel="noopener noreferrer"
+                    style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '8px', padding: '8px 12px', textDecoration: 'none' }}>
+                    <div>
+                      <div style={{ color: '#fff', fontSize: '13px', fontWeight: 'bold' }}>{ext.name}</div>
+                      <div style={{ color: '#666', fontSize: '11px' }}>{ext.desc}</div>
+                    </div>
+                    <span style={{ color: '#555', fontSize: '12px' }}>↗</span>
+                  </a>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Step 4 */}
+          <div style={{ display: 'flex', gap: '14px', marginBottom: '8px' }}>
+            <div style={{ width: '28px', height: '28px', borderRadius: '50%', background: 'rgba(234,179,8,0.15)', border: '1px solid #eab308', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#eab308', fontWeight: 'bold', fontSize: '14px', flexShrink: 0, marginTop: '2px' }}>⚡</div>
+            <div>
+              <h3 style={{ color: '#fff', fontSize: '16px', margin: '0 0 6px 0' }}>Zap Riders with Bitcoin</h3>
+              <p style={{ margin: 0, fontSize: '13px' }}>
+                Connect a Lightning wallet via <strong style={{ color: '#fff' }}>NWC</strong> (tap the ⚡ icon in the header) to send instant micropayments to riders and event organizers you want to support.
+              </p>
+            </div>
+          </div>
+
         </div>
       </div>
 
