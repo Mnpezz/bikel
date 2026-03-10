@@ -69,10 +69,97 @@ cd apk
 | `33301` | Ride events (distance, duration, GPS route, confidence) |
 | `31923` | Scheduled group rides (NIP-52) |
 | `31925` | RSVPs for scheduled rides |
-| `31924` | Contest events |
+| `31924` | Challenge events |
 | `5` | Deletion requests |
 | `4` | Encrypted DMs between riders |
 | `1` | Ride comments |
+
+---
+## 📐 Kind 33301 — Ride Event Spec
+
+This section documents the full structure of a Bikel ride event so that third-party Nostr clients can parse and display rides without needing to read the source code.
+
+### Top-level fields
+
+| Field | Value |
+|-------|-------|
+| `kind` | `33301` |
+| `content` | JSON object (see below) — present only when `visibility = "full"`, empty string otherwise |
+| `created_at` | Unix timestamp of when the ride was published |
+| `pubkey` | Hex pubkey of the rider |
+
+### Tags
+
+| Tag | Example | Description |
+|-----|---------|-------------|
+| `distance` | `["distance", "12.4"]` | Total ride distance in **miles**, as a decimal string |
+| `duration` | `["duration", "3720"]` | Total ride duration in **seconds**, as an integer string |
+| `visibility` | `["visibility", "full"]` | Route sharing mode — `"full"` (GPS route included), or `"hidden"` (stats only, no route) |
+| `title` | `["title", "Morning Commute"]` | Optional rider-provided title |
+| `description` | `["description", "Felt great today"]` | Optional rider-provided description |
+| `image` | `["image", "https://..."]` | Optional URL to a photo from the ride |
+| `confidence` | `["confidence", "0.85"]` | GPS confidence score from `0.0` (low) to `1.0` (high), as a decimal string. Rides auto-detected in the background may have lower confidence than manually recorded rides. Omitted on older events. |
+
+### Content (when `visibility = "full"`)
+
+The `content` field is a JSON-encoded object with a single key:
+
+```json
+{
+  "route": [
+    [37.7749, -122.4194],
+    [37.7751, -122.4190],
+    ...
+  ]
+}
+```
+
+Each element in `route` is a `[latitude, longitude]` pair as decimals. The array is ordered chronologically from ride start to finish. Privacy tail-trimming (dropping the first and last ~0.1 miles) may be applied by the client before publishing, so the route will not include the rider's precise start/end location unless they opted out of trimming.
+
+When `visibility = "hidden"`, `content` is an empty string and no route is published.
+
+### Example event
+
+```json
+{
+  "kind": 33301,
+  "pubkey": "9367a951...",
+  "created_at": 1710000000,
+  "tags": [
+    ["distance", "8.3"],
+    ["duration", "2340"],
+    ["visibility", "full"],
+    ["title", "Evening Loop"],
+    ["description", "Nice sunset ride"],
+    ["image", "https://example.com/ride.jpg"],
+    ["confidence", "0.92"]
+  ],
+  "content": "{\"route\":[[37.7749,-122.4194],[37.7751,-122.4190]]}",
+  "id": "...",
+  "sig": "..."
+}
+```
+
+### Filtering recommendations
+
+When querying relays for Bikel rides, filter by `kinds: [33301]`. To display a feed of recent global rides, use a `limit` of 50–100 and sort by `created_at` descending. It is recommended to filter out rides with `distance < 0.1` miles as these are likely test events or GPS errors. If you wish to show only high-quality auto-detected rides, filter for `confidence >= 0.7`.
+
+### Deletion
+
+Rides can be deleted by their author via a standard `kind 5` event referencing the ride's event ID:
+
+```json
+{
+  "kind": 5,
+  "tags": [
+    ["e", "<ride-event-id>"],
+    ["k", "33301"]
+  ],
+  "content": "deleted"
+}
+```
+
+Clients should respect these deletion events and suppress the referenced ride from their UI.
 
 ---
 ## 💡 Philosophy
