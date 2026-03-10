@@ -119,14 +119,16 @@ export async function publishRide(
     visibility: 'full' | 'blurred' | 'hidden' = 'full',
     title: string = "",
     description: string = "",
-    image: string = ""
+    image: string = "",
+    overrideConfidence?: number
 ) {
     const ndk = await connectNDK();
-
     const event = new NDKEvent(ndk);
     event.kind = 33301;
 
-    const confidence = calculateRideConfidence(distanceMiles, durationSeconds, routePoints);
+    const confidence = overrideConfidence !== undefined
+        ? overrideConfidence
+        : calculateRideConfidence(distanceMiles, durationSeconds, routePoints);
 
     // Basic tags
     event.tags = [

@@ -301,6 +301,28 @@ function App() {
     return '#ff4d4f';
   };
 
+  // Interpolate ride color from fresh green → aged yellow → old dim based on age
+  const rideAgeColor = (rideTime: number): { color: string; opacity: number } => {
+    const ageMs = Date.now() - rideTime * 1000;
+    const ageDays = ageMs / (1000 * 60 * 60 * 24);
+    // 0–1 days: full green; 1–14 days: green→yellow; 14+ days: yellow→dim
+    if (ageDays <= 1) return { color: '#00ffaa', opacity: 0.7 };
+    if (ageDays <= 14) {
+      const t = (ageDays - 1) / 13; // 0→1 over days 1–14
+      // Lerp #00ffaa → #eab308
+      const r = Math.round(0x00 + t * (0xea - 0x00));
+      const g = Math.round(0xff + t * (0xb3 - 0xff));
+      const b = Math.round(0xaa + t * (0x08 - 0xaa));
+      return { color: `rgb(${r},${g},${b})`, opacity: 0.6 - t * 0.2 };
+    }
+    // 14–60 days: yellow→very dim
+    const t = Math.min((ageDays - 14) / 46, 1);
+    const r = Math.round(0xea + t * (0x3a - 0xea));
+    const g = Math.round(0xb3 + t * (0x32 - 0xb3));
+    const b = Math.round(0x08 + t * (0x00 - 0x08));
+    return { color: `rgb(${r},${g},${b})`, opacity: 0.4 - t * 0.25 };
+  };
+
   return (
     <div className="app-container">
       <header className="header animate-fade-in">
@@ -583,12 +605,13 @@ function App() {
             {!showHeatmap && (viewMode === 'personal' ? myRides : filteredGlobalRides).map(ride => {
               if (ride.route.length === 0) return null;
               const startCoords: [number, number] = [ride.route[0][0], ride.route[0][1]];
+              const { color: rideColor, opacity: rideOpacity } = rideAgeColor(ride.time);
               return (
                 <div key={ride.id}>
-                  <CircleMarker center={startCoords} radius={6} pathOptions={{ color: 'var(--accent-primary)', fillColor: 'var(--accent-primary)', fillOpacity: 0.8, weight: 2 }} eventHandlers={{ click: () => setSelectedRide(ride) }}>
+                  <CircleMarker center={startCoords} radius={5} pathOptions={{ color: rideColor, fillColor: rideColor, fillOpacity: rideOpacity + 0.1, weight: 2 }} eventHandlers={{ click: () => setSelectedRide(ride) }}>
                     <Popup><div style={{ color: '#000', fontSize: '13px' }}><strong>{ride.pubkey.substring(0, 12)}...</strong><br />{ride.distance} mi in {ride.duration}</div></Popup>
                   </CircleMarker>
-                  <Polyline positions={ride.route as [number, number][]} pathOptions={{ color: 'var(--accent-primary)', weight: 3, opacity: 0.6 }} eventHandlers={{ click: () => setSelectedRide(ride) }} />
+                  <Polyline positions={ride.route as [number, number][]} pathOptions={{ color: rideColor, weight: 3, opacity: rideOpacity }} eventHandlers={{ click: () => setSelectedRide(ride) }} />
                 </div>
               );
             })}
@@ -618,7 +641,7 @@ function App() {
               <button onClick={() => setSelectedRide(null)} className="btn btn-surface" style={{ padding: '8px' }}><X size={24} /></button>
             </div>
             {selectedRide.image && selectedRide.image !== 'https://bikel.ink/bikelLogo.jpg' && selectedRide.image !== '/bikelLogo.jpg' && (
-              <div style={{ padding: '20px 20px 0' }}><img src={selectedRide.image} alt="Ride Media" style={{ width: '100%', height: '200px', objectFit: 'cover', borderRadius: '8px' }} /></div>
+              <div style={{ padding: '20px 20px 0' }}><img src={selectedRide.image} alt="Ride Media" style={{ width: '100%', height: '120px', objectFit: 'cover', borderRadius: '8px' }} /></div>
             )}
             <div className="modal-stats" style={{ display: 'flex', padding: '20px', gap: '40px', background: 'rgba(0,0,0,0.3)' }}>
               <div className="stat-box"><div className="stat-value">{selectedRide.distance}</div><div className="stat-label">MILES</div></div>
@@ -742,17 +765,60 @@ function App() {
       {/* About Panel */}
       <div className={`side-panel ${showAbout ? 'open' : ''}`}>
         <div className="side-panel-header">
-          <h2 className="side-panel-title"><Info size={24} color="#00ffaa" /> About Bikel</h2>
-          <button className="close-panel-btn" onClick={() => setShowAbout(false)}><X size={20} /></button>
+          <h2 className="side-panel-title">
+            <Info size={24} color="#00ffaa" /> About Bikel
+          </h2>
+          <button className="close-panel-btn" onClick={() => setShowAbout(false)}>
+            <X size={20} />
+          </button>
         </div>
+
         <div style={{ color: '#ccc', lineHeight: 1.6 }}>
-          <p style={{ marginBottom: '16px' }}><strong style={{ color: '#fff' }}>Bikel</strong> is an open, decentralized mapping application built specifically for cyclists utilizing the Nostr network.</p>
-          <p style={{ marginBottom: '16px' }}>Traditional fitness trackers lock your geolocation data into proprietary silos, monetizing your hardware investments against you. Bikel operates via NIP-52 Time-Based Events natively on Nostr, meaning your global ride histories are permanently secured by cryptographic keys you control.</p>
-          <p style={{ marginBottom: '16px' }}>Organize alleycat races, split micropayments over Lightning (NWC), and maintain a truly sovereign, immutable record of every mile ridden.</p>
-          <div style={{ padding: '16px', background: 'rgba(0,255,170,0.1)', border: '1px solid rgba(0,255,170,0.3)', borderRadius: '8px', marginTop: '24px' }}>
-            <h3 style={{ color: '#00ffaa', fontSize: '16px', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}><Zap size={16} /> Open Source</h3>
-            <p style={{ fontSize: '14px', margin: 0 }}>Bikel is entirely open-source software. You are free to audit, clone, and host your own instances of these clients forever.</p>
+
+          <p style={{ marginBottom: '16px' }}>
+            <strong style={{ color: '#fff' }}>Bikel</strong> is an open, decentralized cycling platform built on the Nostr network.
+            Track rides, publish them to the public network, and contribute to a global open dataset of where people actually bike.
+          </p>
+
+          <p style={{ marginBottom: '16px' }}>
+            Traditional fitness apps lock your GPS data into corporate silos. Bikel flips that model by publishing rides as
+            NIP-52 time-based events on Nostr, meaning your ride history belongs to your cryptographic identity and can be used
+            across any compatible client forever.
+          </p>
+
+          <p style={{ marginBottom: '16px' }}>
+            All rides are opt-in and anonymized. The aggregated GPS data forms an open cycling dataset that anyone can use —
+            from researchers and developers to cities planning better cycling infrastructure.
+          </p>
+
+          <p style={{ marginBottom: '16px' }}>
+            Bikel also enables community ride challenges, group discovery, and optional Lightning micropayments using Nostr Wallet Connect.
+          </p>
+
+          <div style={{
+            padding: '16px',
+            background: 'rgba(0,255,170,0.1)',
+            border: '1px solid rgba(0,255,170,0.3)',
+            borderRadius: '8px',
+            marginTop: '24px'
+          }}>
+            <h3 style={{
+              color: '#00ffaa',
+              fontSize: '16px',
+              marginBottom: '8px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px'
+            }}>
+              <Zap size={16} /> Open Source
+            </h3>
+
+            <p style={{ fontSize: '14px', margin: 0 }}>
+              Bikel is fully open-source software. Anyone can audit the code, build their own clients, or run their own relays.
+              The goal is a permanent, open network for cycling data — owned by riders, not platforms.
+            </p>
           </div>
+
         </div>
       </div>
 
@@ -857,7 +923,7 @@ function App() {
             </div>
           </div>
           <p style={{ textAlign: 'center', fontSize: '16px', marginBottom: '32px' }}>Download the official Android APK to passively record maps, upload photos, and broadcast rides securely to any Nostr relay!</p>
-          <a href="https://github.com/Mnpezz/bikel/releases/download/v1.0.0/app-release.apk" download className="btn btn-primary" style={{ width: '100%', padding: '16px', fontSize: '18px', justifyContent: 'center', background: '#00ffaa', color: '#000', fontWeight: '900', textTransform: 'uppercase', letterSpacing: '1px', boxShadow: '0 0 20px rgba(0,255,170,0.4)' }}>Download Android APK</a>
+          <a href="https://github.com/Mnpezz/bikel/releases/download/v1.1.0/app-release.apk" download className="btn btn-primary" style={{ width: '100%', padding: '16px', fontSize: '18px', justifyContent: 'center', background: '#00ffaa', color: '#000', fontWeight: '900', textTransform: 'uppercase', letterSpacing: '1px', boxShadow: '0 0 20px rgba(0,255,170,0.4)' }}>Download Android APK</a>
           <div style={{ marginTop: '24px', fontSize: '12px', color: 'rgba(255,255,255,0.4)', textAlign: 'center' }}>Requires Android 10.0 or higher.</div>
         </div>
       </div>
