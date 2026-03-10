@@ -1296,12 +1296,12 @@ export default function App() {
                                   try {
                                     if (c.feeSats > 0) { await zapRideEvent(c.id, ESCROW_PUBKEY, c.kind, Math.floor(c.feeSats), "Challenge Entry Fee"); Alert.alert("Payment Verified", `Joined challenge for ${c.feeSats} sats!`); }
                                     const joined = await publishRSVP(c);
-                                    if (joined) { Alert.alert("Success", "You are entered into the contest!"); setActiveContests(prev => prev.map(contest => contest.id === c.id ? { ...contest, attendees: [...contest.attendees, currentHex] } : contest)); }
+                                    if (joined) { Alert.alert("Success", "You are entered into the challenge!"); setActiveContests(prev => prev.map(contest => contest.id === c.id ? { ...contest, attendees: [...contest.attendees, currentHex] } : contest)); }
                                   } catch (e: any) { Alert.alert("Error", e.message || "Failed to enter challenge"); }
                                 }}
                               >
                                 <Zap size={14} color={c.attendees.includes(currentHex) ? "#eab308" : "#000"} />
-                                <Text style={{ color: c.attendees.includes(currentHex) ? '#eab308' : '#000', fontWeight: 'bold' }}>{c.attendees.includes(currentHex) ? 'ENTERED' : 'ENTER CONTEST'}</Text>
+                                <Text style={{ color: c.attendees.includes(currentHex) ? '#eab308' : '#000', fontWeight: 'bold' }}>{c.attendees.includes(currentHex) ? 'ENTERED' : 'ENTER CHALLENGE'}</Text>
                               </TouchableOpacity>
                             )}
                             {isPast && <Text style={{ color: '#aaa', fontSize: 12, fontWeight: 'bold' }}>EXPIRED</Text>}
@@ -1471,12 +1471,12 @@ export default function App() {
               <Text style={{ color: schedType === 'ride' ? '#000' : '#fff', fontWeight: 'bold' }}>GROUP RIDE</Text>
             </TouchableOpacity>
             <TouchableOpacity style={{ flex: 1, backgroundColor: schedType === 'contest' ? '#eab308' : 'rgba(255,255,255,0.1)', paddingVertical: 10, borderRadius: 8, alignItems: 'center' }} onPress={() => setSchedType('contest')}>
-              <Text style={{ color: schedType === 'contest' ? '#000' : '#fff', fontWeight: 'bold' }}>CONTEST</Text>
+              <Text style={{ color: schedType === 'contest' ? '#000' : '#fff', fontWeight: 'bold' }}>CHALLENGE</Text>
             </TouchableOpacity>
           </View>
           <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
             <View style={styles.settingsSection}>
-              <Text style={styles.settingsLabel}>{schedType === 'ride' ? 'RIDE NAME' : 'CONTEST TITLE'}</Text>
+              <Text style={styles.settingsLabel}>{schedType === 'ride' ? 'RIDE NAME' : 'CHALLENGE TITLE'}</Text>
               <TextInput style={styles.keyInput} placeholder="e.g. Saturday Morning Coffee Ride" placeholderTextColor="rgba(255,255,255,0.3)" value={schedName} onChangeText={setSchedName} />
               <Text style={styles.settingsLabel}>DESCRIPTION</Text>
               <TextInput style={[styles.keyInput, { height: 80 }]} placeholder="Pace, expected distance, drop/no-drop..." placeholderTextColor="rgba(255,255,255,0.3)" multiline value={schedDesc} onChangeText={setSchedDesc} />
@@ -1534,7 +1534,7 @@ export default function App() {
 
               {schedType === 'contest' && (
                 <>
-                  <Text style={[styles.settingsLabel, { marginTop: 16 }]}>CONTEST DURATION (DAYS)</Text>
+                  <Text style={[styles.settingsLabel, { marginTop: 16 }]}>CHALLENGE DURATION (DAYS)</Text>
                   <TextInput style={[styles.keyInput, { marginBottom: 16 }]} keyboardType="number-pad" value={contestEndDays} onChangeText={setContestEndDays} />
                   <Text style={[styles.settingsLabel, { marginTop: 8 }]}>WINNING METRIC</Text>
                   <View style={{ flexDirection: 'row', gap: 5, marginBottom: 16 }}>

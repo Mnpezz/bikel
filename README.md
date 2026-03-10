@@ -162,7 +162,87 @@ Rides can be deleted by their author via a standard `kind 5` event referencing t
 Clients should respect these deletion events and suppress the referenced ride from their UI.
 
 ---
-## 💡 Philosophy
+## 📐 Kind 31924 — Challenge Event Spec
+
+Bikel challenges are community competitions where riders pay a sats entry fee, compete over a set time window, and the escrow bot automatically pays out to the top three finishers.
+
+### Top-level fields
+
+| Field | Value |
+|-------|-------|
+| `kind` | `31924` |
+| `content` | Empty string (all data is in tags) |
+| `created_at` | Unix timestamp of when the challenge was created |
+| `pubkey` | Hex pubkey of the challenge organizer |
+
+### Tags
+
+| Tag | Example | Description |
+|-----|---------|-------------|
+| `name` | `["name", "July Distance King"]` | Display name of the challenge |
+| `description` | `["description", "Who can ride the most miles?"]` | Human-readable description |
+| `start` | `["start", "1720000000"]` | Unix timestamp when the challenge window opens |
+| `end` | `["end", "1720604800"]` | Unix timestamp when the challenge window closes |
+| `parameter` | `["parameter", "max_distance"]` | Winning metric — one of `max_distance`, `max_elevation`, or `fastest_mile` |
+| `fee` | `["fee", "5000"]` | Entry fee in satoshis as an integer string. `"0"` for free challenges |
+| `p` | `["p", "hexpubkey1"]` | Optional — one tag per invited participant. If no `p` tags are present the challenge is **global** (open to anyone). If one or more `p` tags are present it is **private** (invite-only) |
+
+### Winning metrics
+
+| Value | Description |
+|-------|-------------|
+| `max_distance` | Rider with the highest total distance (miles) across all rides submitted during the window wins |
+| `max_elevation` | Rider with the highest total elevation gain wins |
+| `fastest_mile` | Rider with the best average pace wins |
+
+### RSVP / entry
+
+Riders join a challenge by publishing a `kind 31925` RSVP event referencing the challenge, and simultaneously zapping the entry fee in sats directly to the escrow bot's pubkey (`ESCROW_PUBKEY`). The escrow bot watches for both the RSVP and the payment before counting a rider as entered.
+
+### Payout
+
+At midnight on the `end` date, the escrow bot automatically evaluates all `kind 33301` ride events published by entered riders during the challenge window, ranks them by the challenge `parameter`, and distributes the prize pool in a **50 / 30 / 20** split to the top three finishers via the Coinos Lightning API.
+
+### Example event
+
+```json
+{
+  "kind": 31924,
+  "pubkey": "cc130b71...",
+  "created_at": 1720000000,
+  "tags": [
+    ["name", "July Distance King"],
+    ["description", "Who can ride the most miles this week?"],
+    ["start", "1720000000"],
+    ["end", "1720604800"],
+    ["parameter", "max_distance"],
+    ["fee", "5000"]
+  ],
+  "content": "",
+  "id": "...",
+  "sig": "..."
+}
+```
+
+Private invite-only challenge (add `p` tags):
+```json
+{
+  "kind": 31924,
+  "tags": [
+    ["name", "Club Ride-Off"],
+    ["start", "1720000000"],
+    ["end", "1720604800"],
+    ["parameter", "fastest_mile"],
+    ["fee", "1000"],
+    ["p", "hexpubkey1"],
+    ["p", "hexpubkey2"],
+    ["p", "hexpubkey3"]
+  ],
+  "content": ""
+}
+```
+
+
 Bikel ensures structural autonomy by keeping its layers entirely decoupled.
 - The **Web Client** doesn't require the Escrow Bot to function.
 - The **Mobile App** publishes routes into thin air (Nostr relays); it doesn't even know if the Web Client exists.
