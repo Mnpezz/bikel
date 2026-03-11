@@ -69,7 +69,7 @@ cd apk
 | `33301` | Ride events (distance, duration, GPS route, confidence) |
 | `31923` | Scheduled group rides (NIP-52) |
 | `31925` | RSVPs for scheduled rides |
-| `31924` | Challenge events |
+| `33401` | Challenge events (custom Bikel kind) |
 | `5` | Deletion requests |
 | `4` | Encrypted DMs between riders |
 | `1` | Ride comments |
@@ -162,86 +162,123 @@ Rides can be deleted by their author via a standard `kind 5` event referencing t
 Clients should respect these deletion events and suppress the referenced ride from their UI.
 
 ---
-## 📐 Kind 31924 — Challenge Event Spec
+## 📐 Kind 33401 — Challenge Event Spec
 
-Bikel challenges are community competitions where riders pay a sats entry fee, compete over a set time window, and the escrow bot automatically pays out to the top three finishers.
+`33401` is a fully custom Bikel kind for cycling challenges and competitions. It is intentionally distinct from NIP-52 calendar kinds (`31922`–`31925`) to avoid conflicts, while being rich enough for other developers to adopt independently.
+
+### Why not reuse NIP-52?
+
+`kind 31924` is defined by NIP-52 as a **Calendar** (a container for collecting calendar events). Bikel challenges have a fundamentally different structure — entry fees, escrow agents, winning metrics, configurable payout splits — so a dedicated kind is the right design. Any client that understands `33401` gets the full challenge experience; clients that don't simply ignore it.
 
 ### Top-level fields
 
 | Field | Value |
 |-------|-------|
-| `kind` | `31924` |
-| `content` | Empty string (all data is in tags) |
-| `created_at` | Unix timestamp of when the challenge was created |
+| `kind` | `33401` |
+| `content` | Human-readable description of the challenge |
+| `created_at` | Unix timestamp of publication |
 | `pubkey` | Hex pubkey of the challenge organizer |
 
 ### Tags
 
-| Tag | Example | Description |
-|-----|---------|-------------|
-| `name` | `["name", "July Distance King"]` | Display name of the challenge |
-| `description` | `["description", "Who can ride the most miles?"]` | Human-readable description |
-| `start` | `["start", "1720000000"]` | Unix timestamp when the challenge window opens |
-| `end` | `["end", "1720604800"]` | Unix timestamp when the challenge window closes |
-| `parameter` | `["parameter", "max_distance"]` | Winning metric — one of `max_distance`, `max_elevation`, or `fastest_mile` |
-| `fee` | `["fee", "5000"]` | Entry fee in satoshis as an integer string. `"0"` for free challenges |
-| `p` | `["p", "hexpubkey1"]` | Optional — one tag per invited participant. If no `p` tags are present the challenge is **global** (open to anyone). If one or more `p` tags are present it is **private** (invite-only) |
+| Tag | Example | Required | Description |
+|-----|---------|----------|-------------|
+| `d` | `["d", "bikel-challenge-1720000000"]` | ✅ | Unique identifier — makes the event addressable and replaceable |
+| `title` | `["title", "July Distance King"]` | ✅ | Display name |
+| `start` | `["start", "1720000000"]` | ✅ | Unix timestamp when the challenge window opens |
+| `end` | `["end", "1720604800"]` | ✅ | Unix timestamp when the challenge window closes |
+| `parameter` | `["parameter", "max_distance"]` | ✅ | Winning metric — `max_distance`, `max_elevation`, or `fastest_mile` |
+| `sport` | `["sport", "cycling"]` | ✅ | Activity type — `cycling`, `running`, `walking`, `swimming` etc. |
+| `unit` | `["unit", "imperial"]` | ✅ | `imperial` or `metric` — tells clients how to display values |
+| `fee` | `["fee", "5000"]` | ✅ | Entry fee in satoshis. Use `"0"` for free challenges |
+| `escrow` | `["escrow", "cc130b71..."]` | ✅ | Hex pubkey of the escrow agent bot that holds and distributes funds |
+| `payout` | `["payout", "50", "30", "20"]` | ☐ | Percentage split for 1st/2nd/3rd. Defaults to 50/30/20 if omitted |
+| `prize` | `["prize", "25000"]` | ☐ | Total prize pool in sats — may exceed collected fees if the challenge is sponsored |
+| `min_confidence` | `["min_confidence", "0.7"]` | ☐ | Minimum ride `confidence` score (0.0–1.0) required to qualify. Rides below this are excluded from scoring |
+| `p` | `["p", "hexpubkey1"]` | ☐ | Invited participant. Omit all `p` tags for a **global** open challenge. Add one per invitee for a **private** challenge |
+| `client` | `["client", "bikel"]` | ☐ | Publishing client identifier for relay filtering |
+| `t` | `["t", "bikel-challenge"]` | ☐ | Hashtag for discoverability |
 
 ### Winning metrics
 
 | Value | Description |
 |-------|-------------|
-| `max_distance` | Rider with the highest total distance (miles) across all rides submitted during the window wins |
-| `max_elevation` | Rider with the highest total elevation gain wins |
-| `fastest_mile` | Rider with the best average pace wins |
+| `max_distance` | Highest total distance (in `unit`) across all qualifying rides during the window |
+| `max_elevation` | Highest total elevation gain |
+| `fastest_mile` | Best average pace — highest mph (imperial) or kph (metric) across a single ride of ≥1 mile/km |
 
-### RSVP / entry
+### Entry flow
 
-Riders join a challenge by publishing a `kind 31925` RSVP event referencing the challenge, and simultaneously zapping the entry fee in sats directly to the escrow bot's pubkey (`ESCROW_PUBKEY`). The escrow bot watches for both the RSVP and the payment before counting a rider as entered.
+1. Rider discovers a `33401` event on a relay
+2. Rider publishes a `kind 31925` RSVP with an `a` tag referencing `33401:<organizer-pubkey>:<d-tag>`
+3. If `fee > 0`, rider simultaneously zaps the fee amount to the `escrow` pubkey
+4. The escrow bot watches for matching RSVPs + zap receipts and registers the rider as entered
 
-### Payout
+### Payout flow
 
-At midnight on the `end` date, the escrow bot automatically evaluates all `kind 33301` ride events published by entered riders during the challenge window, ranks them by the challenge `parameter`, and distributes the prize pool in a **50 / 30 / 20** split to the top three finishers via the Coinos Lightning API.
+At midnight UTC on the `end` date, the escrow bot:
+1. Fetches all `kind 33301` rides from entered riders with `created_at` between `start` and `end`
+2. Filters out rides where `confidence < min_confidence` (if set)
+3. Ranks riders by `parameter`
+4. Distributes the prize pool according to `payout` split (default 50/30/20) via Lightning
 
-### Example event
+### Example event — global open challenge
 
 ```json
 {
-  "kind": 31924,
+  "kind": 33401,
   "pubkey": "cc130b71...",
   "created_at": 1720000000,
   "tags": [
-    ["name", "July Distance King"],
-    ["description", "Who can ride the most miles this week?"],
+    ["d", "bikel-challenge-1720000000"],
+    ["title", "July Distance King"],
     ["start", "1720000000"],
     ["end", "1720604800"],
     ["parameter", "max_distance"],
-    ["fee", "5000"]
+    ["sport", "cycling"],
+    ["unit", "imperial"],
+    ["fee", "5000"],
+    ["prize", "25000"],
+    ["escrow", "cc130b7120d00ded76d065bf0bd27e3a36a38d5268208078a1e99aa29ac44adf"],
+    ["payout", "50", "30", "20"],
+    ["min_confidence", "0.7"],
+    ["client", "bikel"],
+    ["t", "bikel-challenge"]
   ],
-  "content": "",
+  "content": "Who can ride the most miles this week? Winner takes the pot!",
   "id": "...",
   "sig": "..."
 }
 ```
 
-Private invite-only challenge (add `p` tags):
+### Example event — private invite-only challenge
+
 ```json
 {
-  "kind": 31924,
+  "kind": 33401,
   "tags": [
-    ["name", "Club Ride-Off"],
+    ["d", "bikel-challenge-1720000001"],
+    ["title", "Club Ride-Off"],
     ["start", "1720000000"],
     ["end", "1720604800"],
     ["parameter", "fastest_mile"],
+    ["sport", "cycling"],
+    ["unit", "imperial"],
     ["fee", "1000"],
+    ["escrow", "cc130b71..."],
+    ["payout", "70", "30", "0"],
     ["p", "hexpubkey1"],
     ["p", "hexpubkey2"],
-    ["p", "hexpubkey3"]
+    ["p", "hexpubkey3"],
+    ["client", "bikel"],
+    ["t", "bikel-challenge"]
   ],
-  "content": ""
+  "content": "Members-only speed challenge."
 }
 ```
 
+---
+## 💡 Philosophy
 
 Bikel ensures structural autonomy by keeping its layers entirely decoupled.
 - The **Web Client** doesn't require the Escrow Bot to function.

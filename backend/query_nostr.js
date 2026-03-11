@@ -10,7 +10,7 @@ const RELAYS = [
 
 const ndk = new NDK({ explicitRelayUrls: RELAYS });
 
-// FIX 1: Mirrors the fetchWithTimeout helper from index.js.
+// Mirrors the fetchWithTimeout helper from index.js.
 // Raw ndk.fetchEvents() can hang indefinitely on relays like Damus
 // that are slow to send EOSE, so we use a subscription with a timeout instead.
 function fetchWithTimeout(filter, timeoutMs = 10000) {
@@ -45,18 +45,18 @@ async function run() {
     }
     console.log("Connected");
 
-    // FIX 2: Was querying kind 31923 — the bot uses kind 31924 for contests.
-    // 31923 is the NIP-52 calendar event kind (not what Bikel uses).
-    // Changed to 31924 to match index.js contest events.
-    console.log("\n--- Querying kind 31924 (Bikel Contests) ---");
-    const contestEvents = await fetchWithTimeout({ kinds: [31924], limit: 20 });
-    console.log("31924 contest events found:", contestEvents.size);
+    // Kind 33401 — Bikel custom challenge kind
+    console.log("\n--- Querying kind 33401 (Bikel Challenges) ---");
+    const contestEvents = await fetchWithTimeout({ kinds: [33401], limit: 20 });
+    console.log("33401 challenge events found:", contestEvents.size);
     for (const e of contestEvents) {
-        const name = e.getMatchingTags('name')[0]?.[1] ?? '(no name)';
+        const title = e.getMatchingTags('title')[0]?.[1] ?? '(no title)';
         const end = e.getMatchingTags('end')[0]?.[1] ?? '(no end)';
         const fee = e.getMatchingTags('fee')[0]?.[1] ?? '0';
         const dTag = e.getMatchingTags('d')[0]?.[1] ?? '(no d)';
-        console.log(`  id=${e.id.substring(0, 12)}... name="${name}" end=${end} fee=${fee} d=${dTag}`);
+        const minConfidence = e.getMatchingTags('min_confidence')[0]?.[1] ?? '0.7';
+        const payout = e.getMatchingTags('payout')[0]?.slice(1).join('/') ?? '50/30/20';
+        console.log(`  id=${e.id.substring(0, 12)}... title="${title}" end=${end} fee=${fee} min_confidence=${minConfidence} payout=${payout} d=${dTag}`);
         console.log(`  tags:`, e.tags);
     }
 
@@ -70,7 +70,7 @@ async function run() {
         console.log(`  id=${e.id.substring(0, 12)}... pubkey=${e.pubkey.substring(0, 8)}... distance=${distance} confidence=${confidence}`);
     }
 
-    // Your rides — full tag dump for debugging contest eligibility
+    // Your rides — full tag dump for debugging challenge eligibility
     const MY_PUBKEY = '9367a951f3e58803ab88d3053a1b7b1be4539addcec555b61cfa19c5f2397e83';
     console.log("\n--- Your Recent Rides (full tags) ---");
     const myRides = await fetchWithTimeout({ kinds: [33301], authors: [MY_PUBKEY], limit: 10 }, 10000);
@@ -83,21 +83,25 @@ async function run() {
         console.log(`  id=${e.id.substring(0, 12)}... created=${date} distance=${distance} confidence=${confidence} duration=${duration}`);
     }
 
-    // Contest window checker — paste a contest's start/end to see which rides fall inside
-    console.log("\n--- Contest Window Check ---");
-    const CONTEST_START = 1772746248; // update these to match your active contest
-    const CONTEST_END = 1772919048;
-    console.log(`Window: ${new Date(CONTEST_START * 1000).toISOString()} → ${new Date(CONTEST_END * 1000).toISOString()}`);
+    // Challenge window checker — paste a challenge's start/end/min_confidence to debug eligibility.
+    // MIN_CONFIDENCE should match the 'min_confidence' tag on the challenge event (default: 0.7).
+    console.log("\n--- Challenge Window Check ---");
+    const CHALLENGE_START = 1772746248; // update to match your active challenge
+    const CHALLENGE_END = 1772919048;   // update to match your active challenge
+    const MIN_CONFIDENCE = 0.7;         // update to match the challenge's min_confidence tag
+    console.log(`Window: ${new Date(CHALLENGE_START * 1000).toISOString()} → ${new Date(CHALLENGE_END * 1000).toISOString()}`);
+    console.log(`Min confidence: ${MIN_CONFIDENCE}`);
     let eligible = 0;
     for (const e of myRides) {
-        const inWindow = e.created_at >= CONTEST_START && e.created_at <= CONTEST_END;
+        const inWindow = e.created_at >= CHALLENGE_START && e.created_at <= CHALLENGE_END;
         const confidence = parseFloat(e.getMatchingTags('confidence')[0]?.[1] ?? '0');
-        const passing = inWindow && confidence >= 0.85;
+        const passing = inWindow && confidence >= MIN_CONFIDENCE;
         console.log(`  id=${e.id.substring(0, 12)}... inWindow=${inWindow} confidence=${confidence} ✅eligible=${passing}`);
         if (passing) eligible++;
     }
-    console.log(`${eligible} ride(s) would score in this contest.`);
-    console.log("\n--- Querying kind 31925 (Contest RSVPs) ---");
+    console.log(`${eligible} ride(s) would score in this challenge.`);
+
+    console.log("\n--- Querying kind 31925 (Challenge RSVPs) ---");
     const rsvpEvents = await fetchWithTimeout({ kinds: [31925], limit: 20 });
     console.log("31925 RSVP events found:", rsvpEvents.size);
     for (const e of rsvpEvents) {

@@ -23,17 +23,33 @@ const COINOS_API_KEY = process.env.COINOS_API_KEY;
 const BOT_NSEC = process.env.BOT_NSEC;
 const PLATFORM_FEE_PCT = 0.05; // 5% stays in Coinos as platform fee
 
-// Base splits for up to 3 winners — renormalized dynamically for fewer entrants.
+// Default splits for up to 3 winners — used only when the challenge event has no 'payout' tag.
+// The event's 'payout' tag always takes precedence so organizers can customize splits.
 //   1 winner  → [1.0]            (100%)
 //   2 winners → [0.625, 0.375]   (62.5% / 37.5%)
 //   3 winners → [0.50, 0.30, 0.20]
 const PAYOUT_SPLITS_BASE = [0.50, 0.30, 0.20];
 
-function getPayoutSplits(winnerCount) {
+/**
+ * Returns normalized payout fractions for the given winner count.
+ * If the challenge event has a 'payout' tag (e.g. ["payout","70","30","0"]),
+ * those percentages are used instead of the defaults.
+ */
+function getPayoutSplits(winnerCount, eventPayoutTag) {
     if (winnerCount <= 0) return [];
-    const count = Math.min(winnerCount, PAYOUT_SPLITS_BASE.length);
-    const raw = PAYOUT_SPLITS_BASE.slice(0, count);
+
+    let base = PAYOUT_SPLITS_BASE;
+
+    // Read from event tag if present and valid
+    if (eventPayoutTag && eventPayoutTag.length >= 2) {
+        const parsed = eventPayoutTag.slice(1).map(Number).filter(n => !isNaN(n) && n >= 0);
+        if (parsed.length > 0) base = parsed.map(n => n / 100);
+    }
+
+    const count = Math.min(winnerCount, base.length);
+    const raw = base.slice(0, count);
     const total = raw.reduce((a, b) => a + b, 0);
+    if (total === 0) return raw.map(() => 0);
     return raw.map(s => s / total);
 }
 
@@ -64,7 +80,6 @@ function saveProcessedContest(contestId) {
 }
 
 // Pending payouts: { [nudgeNoteId]: { pubkey, splitSats, contestId, contestName } }
-// Keyed by the public "set your lud16" note ID so the reply listener can look them up.
 function loadPendingPayouts() {
     try {
         if (fs.existsSync(PENDING_PAYOUTS_FILE))
@@ -157,7 +172,6 @@ async function payLightningInvoice(invoice) {
 
 // ─────────────────────────────────────────────
 // Payout helper — fetch lud16, get invoice, pay
-// Returns true on success, false on any failure
 // ─────────────────────────────────────────────
 async function payoutWinner(ndk, pubkey, splitSats) {
     const splitMsats = splitSats * 1000;
@@ -217,7 +231,6 @@ async function publishNote(ndk, content, extraTags = []) {
 // ─────────────────────────────────────────────
 // Reply listener — retries pending payouts when
 // a winner replies to their "set your lud16" note
-// Runs as a persistent subscription for the lifetime of the process
 // ─────────────────────────────────────────────
 async function startReplyListener(ndk) {
     const pending = loadPendingPayouts();
@@ -230,19 +243,15 @@ async function startReplyListener(ndk) {
 
     console.log(`[Bot] Listening for replies on ${noteIds.length} pending payout note(s)...`);
 
-    // closeOnEose: false keeps the subscription alive to catch future replies
     const sub = ndk.subscribe({ kinds: [1], '#e': noteIds }, { closeOnEose: false });
 
     sub.on('event', async (reply) => {
-        // Find which pending nudge note this reply tags
         const referencedNoteId = reply.tags
             .find(t => t[0] === 'e' && noteIds.includes(t[1]))?.[1];
         if (!referencedNoteId) return;
 
         const payout = pending[referencedNoteId];
         if (!payout) return;
-
-        // Only the winner themselves can trigger the retry
         if (reply.pubkey !== payout.pubkey) return;
 
         console.log(`[Bot] Winner ${payout.pubkey.substring(0, 8)} replied — retrying ${payout.splitSats} sat payout...`);
@@ -251,7 +260,7 @@ async function startReplyListener(ndk) {
 
         if (success) {
             removePendingPayout(referencedNoteId);
-            delete pending[referencedNoteId]; // update in-memory copy too
+            delete pending[referencedNoteId];
 
             const npub = nip19.npubEncode(payout.pubkey);
             await publishNote(ndk,
@@ -266,15 +275,17 @@ async function startReplyListener(ndk) {
 }
 
 // ─────────────────────────────────────────────
-// Upcoming contest announcements
-// Posts a hype note for contests starting within the next hour
+// Upcoming challenge announcements
+// Posts a hype note for challenges starting within the next hour
 // ─────────────────────────────────────────────
 async function announceUpcomingContests(ndk) {
-    console.log('[Bot] Checking for contests starting soon...');
+    console.log('[Bot] Checking for challenges starting soon...');
 
     const now = Math.floor(Date.now() / 1000);
     const oneHour = 60 * 60;
-    const contestsRaw = await fetchWithTimeout(ndk, { kinds: [31924], '#t': ['bikel'] }, 15000);
+
+    // Kind 33401 — Bikel custom challenge kind
+    const contestsRaw = await fetchWithTimeout(ndk, { kinds: [33401], '#t': ['bikel'] }, 15000);
 
     const startingSoon = Array.from(contestsRaw).filter(c => {
         const start = parseInt(c.getMatchingTags('start')[0]?.[1] || '0', 10);
@@ -282,12 +293,13 @@ async function announceUpcomingContests(ndk) {
     });
 
     if (startingSoon.length === 0) {
-        console.log('[Bot] No contests starting in the next hour.');
+        console.log('[Bot] No challenges starting in the next hour.');
         return;
     }
 
     for (const contest of startingSoon) {
-        const name = contest.getMatchingTags('name')[0]?.[1] || 'Community Contest';
+        // 'title' tag — kind 33401 uses 'title', not 'name'
+        const name = contest.getMatchingTags('title')[0]?.[1] || 'Community Challenge';
         const parameter = contest.getMatchingTags('parameter')[0]?.[1] || 'max_distance';
         const feeSats = contest.getMatchingTags('fee')[0]?.[1] || '0';
         const nevent = nip19.neventEncode({ id: contest.id, relays: RELAYS });
@@ -299,10 +311,10 @@ async function announceUpcomingContests(ndk) {
 
         const feeText = parseInt(feeSats) > 0
             ? `Entry: ${feeSats} sats. Top riders split the prize pool! ⚡`
-            : `This contest is free to enter!`;
+            : `This challenge is free to enter!`;
 
         const content =
-            `🚴 A Bikel contest is starting soon!\n\n` +
+            `🚴 A Bikel challenge is starting soon!\n\n` +
             `📋 ${name}\n` +
             `🏆 Metric: ${paramLabel}\n` +
             `${feeText}\n\n` +
@@ -310,29 +322,29 @@ async function announceUpcomingContests(ndk) {
             `nostr:${nevent}`;
 
         await publishNote(ndk, content, [['e', contest.id, RELAYS[0], 'mention']]);
-        console.log(`[Bot] Announced upcoming contest: "${name}"`);
+        console.log(`[Bot] Announced upcoming challenge: "${name}"`);
     }
 }
 
 // ─────────────────────────────────────────────
-// Main — process finished contests
+// Main — process finished challenges
 // ─────────────────────────────────────────────
 async function processFinishedContests() {
-    console.log('[Bot] Running finished contest aggregator...');
+    console.log('[Bot] Running finished challenge aggregator...');
 
     const processedContests = loadProcessedContests();
-    console.log(`[Bot] ${processedContests.size} contest(s) already processed (will skip).`);
+    console.log(`[Bot] ${processedContests.size} challenge(s) already processed (will skip).`);
 
     try {
         const ndk = await initializeNDK();
         const now = Math.floor(Date.now() / 1000);
         const yesterday = now - (24 * 60 * 60);
 
-        // Announce upcoming contests and start reply listener each run
         await announceUpcomingContests(ndk);
         await startReplyListener(ndk);
 
-        const contestsRaw = await fetchWithTimeout(ndk, { kinds: [31924], '#t': ['bikel'] }, 15000);
+        // Kind 33401 — Bikel custom challenge kind
+        const contestsRaw = await fetchWithTimeout(ndk, { kinds: [33401], '#t': ['bikel'] }, 15000);
 
         const finishedContests = Array.from(contestsRaw).filter(c => {
             const end = parseInt(c.getMatchingTags('end')[0]?.[1] || '0', 10);
@@ -340,11 +352,11 @@ async function processFinishedContests() {
         });
 
         if (finishedContests.length === 0) {
-            console.log('[Bot] No finished contests in the last 24 hours.');
+            console.log('[Bot] No finished challenges in the last 24 hours.');
             return;
         }
 
-        console.log(`[Bot] Found ${finishedContests.length} finished contest(s).`);
+        console.log(`[Bot] Found ${finishedContests.length} finished challenge(s).`);
 
         for (const contest of finishedContests) {
             if (processedContests.has(contest.id)) {
@@ -357,14 +369,23 @@ async function processFinishedContests() {
             const parameter = contest.getMatchingTags('parameter')[0]?.[1] || 'max_distance';
             const feeSats = parseInt(contest.getMatchingTags('fee')[0]?.[1] || '0', 10);
             const dTag = contest.getMatchingTags('d')[0]?.[1];
-            const contestName = contest.getMatchingTags('name')[0]?.[1] || 'Community Contest';
 
-            console.log(`\n[Bot] Processing: "${contestName}" (${parameter}, ${feeSats} sat fee)`);
+            // 'title' tag — kind 33401 uses 'title', not 'name'
+            const contestName = contest.getMatchingTags('title')[0]?.[1] || 'Community Challenge';
+
+            // Read min_confidence from event tag — organizer sets this, falls back to 0.7
+            const minConfidence = parseFloat(contest.getMatchingTags('min_confidence')[0]?.[1] || '0.7');
+
+            // Read payout splits from event tag — falls back to default 50/30/20
+            const payoutTag = contest.getMatchingTags('payout')[0];
+
+            console.log(`\n[Bot] Processing: "${contestName}" (${parameter}, ${feeSats} sat fee, min_confidence ${minConfidence})`);
 
             // ── Participants ──────────────────────────────
+            // aTag uses kind 33401
             const rsvps = await fetchWithTimeout(ndk, {
                 kinds: [31925],
-                '#a': [`31924:${contest.pubkey}:${dTag}`],
+                '#a': [`33401:${contest.pubkey}:${dTag}`],
                 limit: 1000
             }, 10000);
 
@@ -391,7 +412,9 @@ async function processFinishedContests() {
 
             for (const ride of rides) {
                 const confidence = parseFloat(ride.getMatchingTags('confidence')[0]?.[1] || '0');
-                if (confidence < 0.85) continue;
+
+                // Use min_confidence from the challenge event, not a hardcoded value
+                if (confidence < minConfidence) continue;
 
                 const distance = parseFloat(ride.getMatchingTags('distance')[0]?.[1] || '0');
                 const duration = parseInt(ride.getMatchingTags('duration')[0]?.[1] || '0', 10);
@@ -407,19 +430,20 @@ async function processFinishedContests() {
 
             const sortedLeaderboard = Array.from(leaderboard.entries()).sort((a, b) => b[1] - a[1]);
             const topWinners = sortedLeaderboard.slice(0, 3);
-            const payoutSplits = getPayoutSplits(topWinners.length);
+
+            // Use event's payout tag if present, otherwise default splits
+            const payoutSplits = getPayoutSplits(topWinners.length, payoutTag);
 
             console.log(`[Bot] Leaderboard:`, sortedLeaderboard);
             console.log(`[Bot] ${topWinners.length} winner(s) — splits: ${payoutSplits.map(s => (s * 100).toFixed(1) + '%').join(', ')}`);
 
             // ── Prize pool ────────────────────────────────
-            // Solo contest (1 entrant, 1 rider) = full refund, no platform fee
             const isSoloContest = participantPubkeys.length === 1 && topWinners.length === 1;
             let totalPrizePoolSats = feeSats > 0 ? participantPubkeys.length * feeSats : 0;
             let platformFeeSats = 0;
 
             if (isSoloContest && feeSats > 0) {
-                console.log(`[Bot] Solo contest — full refund of ${totalPrizePoolSats} sats. No platform fee taken.`);
+                console.log(`[Bot] Solo challenge — full refund of ${totalPrizePoolSats} sats. No platform fee taken.`);
             } else if (feeSats > 0) {
                 platformFeeSats = Math.ceil(totalPrizePoolSats * PLATFORM_FEE_PCT);
                 totalPrizePoolSats = totalPrizePoolSats - platformFeeSats;
@@ -431,7 +455,7 @@ async function processFinishedContests() {
                 : parameter === 'fastest_mile' ? 'mph'
                     : 'pts';
             const nevent = nip19.neventEncode({ id: contest.id, relays: RELAYS });
-            const noLud16Winners = []; // winners who need a lud16 nudge
+            const noLud16Winners = [];
 
             for (let i = 0; i < topWinners.length; i++) {
                 const [pubkey, score] = topWinners[i];
@@ -451,14 +475,14 @@ async function processFinishedContests() {
 
             // Mark as processed BEFORE publishing notes so re-payout can never happen
             saveProcessedContest(contest.id);
-            console.log(`[Bot] Contest ${contest.id.substring(0, 12)}... marked as processed.`);
+            console.log(`[Bot] Challenge ${contest.id.substring(0, 12)}... marked as processed.`);
 
             // ── Results note ──────────────────────────────
             if (ndk.signer) {
                 let summaryText = `🏆 Results are in for: ${contestName}!\n\n`;
 
                 if (topWinners.length === 0) {
-                    summaryText += `No valid rides were recorded for this contest.\n`;
+                    summaryText += `No valid rides were recorded for this challenge.\n`;
                 } else {
                     for (let i = 0; i < topWinners.length; i++) {
                         const [pubkey, score] = topWinners[i];
@@ -482,7 +506,7 @@ async function processFinishedContests() {
 
                 await publishNote(ndk, summaryText, [['e', contest.id, RELAYS[0], 'root']]);
 
-                // ── Per-winner lud16 nudge notes + DMs ────
+                // ── Per-winner lud16 nudge notes ──────────
                 for (const { pubkey, splitSats, place } of noLud16Winners) {
                     const npub = nip19.npubEncode(pubkey);
 
@@ -496,7 +520,6 @@ async function processFinishedContests() {
                         ['e', contest.id, RELAYS[0], 'mention']
                     ]);
 
-                    // Save pending payout keyed by nudge note ID for the reply listener
                     if (nudgeNote) {
                         savePendingPayout(nudgeNote.id, { pubkey, splitSats, contestId: contest.id, contestName });
                     }
@@ -504,10 +527,10 @@ async function processFinishedContests() {
             }
         }
     } catch (e) {
-        console.error('[Bot] Error processing contests:', e);
+        console.error('[Bot] Error processing challenges:', e);
     }
 
-    console.log('[Bot] Contest processing complete.\n');
+    console.log('[Bot] Challenge processing complete.\n');
 }
 
 // ─────────────────────────────────────────────

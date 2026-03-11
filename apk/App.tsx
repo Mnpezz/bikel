@@ -1,12 +1,13 @@
-import React, { useState, useEffect } from 'react';
-import { StyleSheet, Text, View, TouchableOpacity, Dimensions, Platform, ScrollView, TextInput, Alert, KeyboardAvoidingView, ActivityIndicator, Image, RefreshControl } from 'react-native';
+import React, { useState, useEffect, useMemo } from 'react';
+import { StyleSheet, Text, View, TouchableOpacity, Dimensions, Platform, ScrollView, TextInput, Alert, KeyboardAvoidingView, ActivityIndicator, Image, RefreshControl, BackHandler, AppState } from 'react-native';
 import * as Location from 'expo-location';
-import { LeafletView, MapLayerType, MapShapeType } from 'react-native-leaflet-view';
-import { Bike, Square, Play, Zap, History, Settings, CalendarPlus, X, MessageSquare, Globe, LocateFixed } from 'lucide-react-native';
+import { LeafletView, MapLayerType, MapShapeType, WebViewLeafletEvents } from 'react-native-leaflet-view';
+import { Bike, Square, Play, Zap, History, Settings, CalendarPlus, X, MessageSquare, Globe, LocateFixed, Map, Mail, Trash2 } from 'lucide-react-native';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import * as Clipboard from 'expo-clipboard';
+import * as ImagePicker from 'expo-image-picker';
 import * as Notifications from 'expo-notifications';
-import { connectNDK, publishRide, fetchMyRides, fetchUserRides, getPrivateKeyNsec, getPublicKeyNpub, getPublicKeyHex, setPrivateKey, publishScheduledRide, publishContestEvent, fetchContests, fetchRecentRides, fetchScheduledRides, publishRSVP, connectNWC, zapRideEvent, fetchComments, publishComment, fetchDMs, sendDM, publishProfile, fetchRideLeaderboard, ESCROW_PUBKEY, RideEvent, ScheduledRideEvent, ContestEvent, RideComment, DMessage } from './src/lib/nostr';
+import { connectNDK, publishRide, fetchMyRides, fetchUserRides, getPrivateKeyNsec, getPublicKeyNpub, getPublicKeyHex, setPrivateKey, publishScheduledRide, publishContestEvent, fetchContests, fetchRecentRides, fetchScheduledRides, deleteRideEvent, publishRSVP, connectNWC, zapRideEvent, fetchComments, publishComment, fetchDMs, sendDM, publishProfile, fetchRideLeaderboard, uploadPhoto, ESCROW_PUBKEY, RideEvent, ScheduledRideEvent, ContestEvent, RideComment, DMessage } from './src/lib/nostr';
 import * as SecureStore from 'expo-secure-store';
 import * as TaskManager from 'expo-task-manager';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -17,10 +18,10 @@ const DRAFT_TASK = 'BIKEL_DRAFT_TASK';
 
 const MAX_DRAFTS = 10;
 const BIKE_SPEED_MIN_MPH = 5;   // m/s * 2.237 — covers slow cyclists & GPS jitter
-const BIKE_SPEED_MAX_MPH = 28;
-const CAR_SPEED_THRESHOLD_MPH = 35;
+const BIKE_SPEED_MAX_MPH = 35;
+const CAR_SPEED_THRESHOLD_MPH = 40;
 const CAR_SPIKE_LIMIT = 3;
-const IDLE_STOP_SECONDS = 120;
+const IDLE_STOP_SECONDS = 90;
 // Warmup: must see N readings in bike range before committing route points
 const WARMUP_NEEDED = 2;
 
@@ -35,7 +36,27 @@ export interface RideDraft {
   speedSpikes: number; // count of >30mph readings
 }
 
-// ── Module-level background tasks ─────────────────────
+// ── Module-level helper for persistent logging ──────────────────
+let lastLogMsg = '';
+let lastLogTime = 0;
+
+async function logEvent(msg: string) {
+  try {
+    const now = Date.now();
+    // Simple deduplication (ignore identical messages within 500ms)
+    if (msg === lastLogMsg && (now - lastLogTime) < 500) return;
+    lastLogMsg = msg;
+    lastLogTime = now;
+
+    const timestamp = new Date().toLocaleTimeString([], { hour12: false });
+    const newLog = `[${timestamp}] ${msg}`;
+    console.log(`[BikelLog] ${newLog}`);
+    const existingRaw = await AsyncStorage.getItem('bikel_logs');
+    let logs = existingRaw ? JSON.parse(existingRaw) : [];
+    logs = [newLog, ...logs].slice(0, 100);
+    await AsyncStorage.setItem('bikel_logs', JSON.stringify(logs));
+  } catch (e) { console.error('Failed to save log:', e); }
+}
 
 // Manual high-accuracy tracking (existing)
 TaskManager.defineTask(LOCATION_TASK, async ({ data, error }: any) => {
@@ -83,115 +104,112 @@ TaskManager.defineTask(DRAFT_TASK, async ({ data, error }: any) => {
     const { locations } = data as { locations: Location.LocationObject[] };
     if (!locations?.length) return;
 
-    const now = Date.now();
-
-    // Load state (or create fresh warmup state)
     const stateRaw = await AsyncStorage.getItem('bikel_draft_state');
     let state = stateRaw ? JSON.parse(stateRaw) : {
       phase: 'warmup',
       warmupCount: 0,
       route: [],
       spikes: 0,
-      startTime: now,
-      lastMovingTime: now,
+      startTime: Date.now(),
+      lastMovingTime: Date.now(),
+      lastSpeed: 0,
+      lastPoint: null
     };
 
+    if (state.phase === 'saving') return;
+
+    let maxBatchSpeed = 0;
+    let hasBikeSpeed = false;
+    let hasCarSpeed = false;
+
     for (const loc of locations) {
-      // Speed: use reported value if available, else estimate 0
-      // High accuracy mode (used below in toggleAutoDetect) reliably provides speed
+      const now = loc.timestamp ?? Date.now();
       const rawSpeed = loc.coords.speed;
-      const speedMph = (rawSpeed !== null && rawSpeed !== undefined && rawSpeed >= 0)
-        ? rawSpeed * 2.237
-        : 0;
 
-      console.log(`[DraftTask] phase=${state.phase} speed=${speedMph.toFixed(1)}mph pts=${state.route.length}`);
+      let speedMph = 0;
+      if (rawSpeed !== null && rawSpeed !== undefined && rawSpeed >= 0) {
+        speedMph = rawSpeed * 2.237;
+      } else if (state.lastPoint) {
+        const dist = distanceMiles(state.lastPoint.lat, state.lastPoint.lng, loc.coords.latitude, loc.coords.longitude);
+        const dt = (now - state.lastPoint.time) / 1000;
+        if (dist > 0.002 && dt > 0 && dt < 20) speedMph = (dist / dt) * 3600;
+      }
 
-      if (state.phase === 'warmup') {
-        // In warmup: count bike-speed readings, ignore everything else
-        if (speedMph >= BIKE_SPEED_MIN_MPH && speedMph <= BIKE_SPEED_MAX_MPH) {
-          state.warmupCount++;
-          console.log(`[DraftTask] Warmup ${state.warmupCount}/${WARMUP_NEEDED}`);
-          if (state.warmupCount >= WARMUP_NEEDED) {
-            // Transition to recording
-            state.phase = 'recording';
-            state.startTime = now;
-            state.lastMovingTime = now;
-            state.route = [];
-            state.spikes = 0;
-            console.log('[DraftTask] ✅ Bike confirmed — recording started');
-            // Update notification to show recording is active
-            await Notifications.scheduleNotificationAsync({
-              content: {
-                title: '🚴 Bikel is recording your ride',
-                body: 'Auto-detected ride in progress — draft will save when you stop',
-                data: { type: 'recording' },
-              },
-              trigger: null,
-            });
-          }
-        } else if (speedMph > CAR_SPEED_THRESHOLD_MPH) {
-          // Fast vehicle during warmup — reset counter
-          state.warmupCount = 0;
-          console.log('[DraftTask] Car speed in warmup — resetting');
-        } else if (speedMph < 1 && state.warmupCount > 0) {
-          // Stopped before warmup finished — decay counter slowly
-          state.warmupCount = Math.max(0, state.warmupCount - 1);
-        }
+      if (speedMph > 60) speedMph = 60;
+      if (speedMph > maxBatchSpeed) maxBatchSpeed = speedMph;
+      if (speedMph >= BIKE_SPEED_MIN_MPH && speedMph <= BIKE_SPEED_MAX_MPH) hasBikeSpeed = true;
+      if (speedMph > CAR_SPEED_THRESHOLD_MPH) hasCarSpeed = true;
 
-      } else if (state.phase === 'recording') {
-        const point = {
+      if (state.phase === 'recording') {
+        state.route.push({
           lat: loc.coords.latitude,
           lng: loc.coords.longitude,
-          time: loc.timestamp || now,
+          time: now,
           speed: speedMph,
-        };
-        state.route.push(point);
+        });
+        if (speedMph > CAR_SPEED_THRESHOLD_MPH) state.spikes++;
+      }
 
-        if (speedMph > CAR_SPEED_THRESHOLD_MPH) {
-          state.spikes++;
-          console.log(`[DraftTask] Spike #${state.spikes}: ${speedMph.toFixed(1)}mph`);
-        }
+      state.lastSpeed = speedMph;
+      state.lastPoint = { lat: loc.coords.latitude, lng: loc.coords.longitude, time: now };
+    }
 
-        // 3 consecutive readings all above bike max → car trip, discard
-        const lastThree = state.route.slice(-3);
-        const sustainedCar = lastThree.length === 3 && lastThree.every((p: any) => p.speed > BIKE_SPEED_MAX_MPH);
-
-        if (state.spikes >= CAR_SPIKE_LIMIT || sustainedCar) {
-          console.log('[DraftTask] 🚗 Car trip detected — discarding, going back to warmup');
+    if (state.phase === 'warmup') {
+      if (hasCarSpeed) {
+        state.warmupCount = 0;
+        await logEvent(`🚗 Car detected (${maxBatchSpeed.toFixed(1)}mph) — warmup reset`);
+      } else if (hasBikeSpeed) {
+        state.warmupCount++;
+        await logEvent(`🚲 Batch bike speed (${maxBatchSpeed.toFixed(1)}mph)! Warmup ${state.warmupCount}/${WARMUP_NEEDED}`);
+        if (state.warmupCount >= WARMUP_NEEDED) {
+          state.phase = 'recording';
+          state.startTime = Date.now();
+          state.lastMovingTime = Date.now();
+          state.route = [];
+          state.spikes = 0;
+          await logEvent('✅ Bike confirmed — recording started');
           await Notifications.scheduleNotificationAsync({
             content: {
-              title: '🚴 Bikel',
-              body: 'Watching for bike rides in background…',
-              data: { type: 'watching' },
+              title: '🚴 Bikel is recording your ride',
+              body: 'Auto-detected ride in progress — draft will save when you stop',
+              data: { type: 'recording' },
             },
             trigger: null,
           });
-          state = { phase: 'warmup', warmupCount: 0, route: [], spikes: 0, startTime: now, lastMovingTime: now };
-          await AsyncStorage.setItem('bikel_draft_state', JSON.stringify(state));
-          return;
         }
+      } else if (maxBatchSpeed < 1 && state.warmupCount > 0) {
+        state.warmupCount--;
+      }
+    } else if (state.phase === 'recording') {
+      if (maxBatchSpeed > 1) state.lastMovingTime = Date.now();
 
-        if (speedMph > 2) state.lastMovingTime = now;
+      // Detection reset (sustained car speed)
+      const lastThree = state.route.slice(-3);
+      const sustainedCar = lastThree.length === 3 && lastThree.every((p: any) => p.speed > BIKE_SPEED_MAX_MPH);
+      if (state.spikes >= CAR_SPIKE_LIMIT || sustainedCar) {
+        await logEvent(`🚗 Abandoning recording — ${state.spikes} spikes, sustainedCar=${sustainedCar}`);
+        await Notifications.scheduleNotificationAsync({
+          content: { title: '🚴 Bikel', body: 'Watching for bike rides in background…', data: { type: 'watching' } },
+          trigger: null,
+        });
+        state = { phase: 'warmup', warmupCount: 0, route: [], spikes: 0, startTime: Date.now(), lastMovingTime: Date.now(), lastPoint: state.lastPoint, lastSpeed: state.lastSpeed };
+        await AsyncStorage.setItem('bikel_draft_state', JSON.stringify(state));
+        return;
+      }
 
-        // Check idle stop
-        const idleSeconds = (now - state.lastMovingTime) / 1000;
-        if (idleSeconds >= IDLE_STOP_SECONDS && state.route.length > 5) {
-          console.log('[DraftTask] 🛑 Idle stop — saving draft');
-          await finalizeDraft(state.startTime, state.route, state.spikes);
-          // Reset notification back to watching
-          await Notifications.scheduleNotificationAsync({
-            content: {
-              title: '🚴 Bikel',
-              body: 'Watching for bike rides in background…',
-              data: { type: 'watching' },
-            },
-            trigger: null,
-          });
-          // Reset to warmup for next ride
-          state = { phase: 'warmup', warmupCount: 0, route: [], spikes: 0, startTime: now, lastMovingTime: now };
-          await AsyncStorage.setItem('bikel_draft_state', JSON.stringify(state));
-          return;
-        }
+      const idleSeconds = (Date.now() - state.lastMovingTime) / 1000;
+      if (idleSeconds >= IDLE_STOP_SECONDS && state.route.length > 5) {
+        state.phase = 'saving';
+        await AsyncStorage.setItem('bikel_draft_state', JSON.stringify(state));
+        await logEvent(`🛑 Idle stop (${idleSeconds.toFixed(0)}s) — saving ${state.route.length} pts`);
+        await finalizeDraft(state.startTime, state.route, state.spikes);
+        await Notifications.scheduleNotificationAsync({
+          content: { title: '🚴 Bikel', body: 'Watching for bike rides in background…', data: { type: 'watching' } },
+          trigger: null,
+        });
+        state = { phase: 'warmup', warmupCount: 0, route: [], spikes: 0, startTime: Date.now(), lastMovingTime: Date.now(), lastPoint: state.lastPoint, lastSpeed: state.lastSpeed };
+        await AsyncStorage.setItem('bikel_draft_state', JSON.stringify(state));
+        return;
       }
     }
 
@@ -218,7 +236,10 @@ async function finalizeDraft(startTimeMs: number, rawRoute: any[], spikes: numbe
     for (let i = 1; i < rawRoute.length; i++) {
       totalDist += distanceMiles(rawRoute[i - 1].lat, rawRoute[i - 1].lng, rawRoute[i].lat, rawRoute[i].lng);
     }
-    if (totalDist < 0.1) { console.log('[DraftTask] Too short, discarding'); return; }
+    if (totalDist < 0.1) {
+      await logEvent(`📏 Draft too short (${totalDist.toFixed(2)}mi) — discarding`);
+      return;
+    }
 
     const endTimeMs = rawRoute[rawRoute.length - 1].time || Date.now();
     const durationSeconds = Math.floor((endTimeMs - startTimeMs) / 1000);
@@ -253,7 +274,7 @@ async function finalizeDraft(startTimeMs: number, rawRoute: any[], spikes: numbe
       trigger: null,
     });
 
-    console.log(`[DraftTask] Draft saved: ${totalDist.toFixed(2)}mi, confidence ${confidence.toFixed(2)}`);
+    await logEvent(`💾 Draft saved: ${totalDist.toFixed(2)}mi, confidence ${confidence.toFixed(2)}`);
   } catch (e) {
     console.error('[DraftTask] finalizeDraft failed:', e);
   }
@@ -280,6 +301,7 @@ export default function App() {
 
   const [showHistory, setShowHistory] = useState(false);
   const [showFeed, setShowFeed] = useState(false);
+  const [isFeedLoading, setIsFeedLoading] = useState(false);
   const [feedTab, setFeedTab] = useState<'contests' | 'rides' | 'feed' | 'drafts'>('feed');
   const [showSettings, setShowSettings] = useState(false);
   const [showSchedule, setShowSchedule] = useState(false);
@@ -312,6 +334,7 @@ export default function App() {
   const [postRideTitle, setPostRideTitle] = useState('');
   const [postRideDesc, setPostRideDesc] = useState('');
   const [postRideImageUrl, setPostRideImageUrl] = useState('');
+  const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
   const [postRidePrivacy, setPostRidePrivacy] = useState<'full' | 'hidden'>('full');
   const [postRideScheduleMode, setPostRideScheduleMode] = useState(false);
   const [trimTails, setTrimTails] = useState(true);
@@ -339,6 +362,22 @@ export default function App() {
   const [newDMText, setNewDMText] = useState('');
   const [isSendingDM, setIsSendingDM] = useState(false);
 
+  // Debug Logs
+  const [showLogs, setShowLogs] = useState(false);
+  const [debugLogs, setDebugLogs] = useState<string[]>([]);
+
+  const loadLogs = async () => {
+    const raw = await AsyncStorage.getItem('bikel_logs');
+    if (raw) setDebugLogs(JSON.parse(raw));
+    else setDebugLogs([]);
+  };
+
+  const clearLogs = async () => {
+    await AsyncStorage.removeItem('bikel_logs');
+    setDebugLogs([]);
+    await logEvent("Logs cleared");
+  };
+
   useEffect(() => {
     if (activeDMUser) {
       setDmMessages([]);
@@ -348,9 +387,11 @@ export default function App() {
 
   const [schedName, setSchedName] = useState('');
   const [schedDesc, setSchedDesc] = useState('');
+  const [schedImage, setSchedImage] = useState('');
+  const [isUploadingSchedPhoto, setIsUploadingSchedPhoto] = useState(false);
   const [schedLocation, setSchedLocation] = useState('');
   const [schedType, setSchedType] = useState<'ride' | 'contest'>('ride');
-  const [contestEndDays, setContestEndDays] = useState('7');
+  const [contestEndDays, setContestEndDays] = useState('7d');
   const [contestParam, setContestParam] = useState<'max_distance' | 'max_elevation' | 'fastest_mile'>('max_distance');
   const [contestFee, setContestFee] = useState('5000');
   const [contestInvites, setContestInvites] = useState('');
@@ -394,87 +435,74 @@ export default function App() {
     await AsyncStorage.setItem('bikel_drafts', JSON.stringify(updated));
   };
 
+  // ── Sync auto-detect task with UI & storage ──────────
+  const syncAutoDetectState = async () => {
+    try {
+      const saved = await AsyncStorage.getItem('bikel_auto_detect');
+      const isEnabled = saved === 'true';
+      const isRunning = await Location.hasStartedLocationUpdatesAsync(DRAFT_TASK);
+      const bgPerm = await Location.getBackgroundPermissionsAsync();
+
+      if (isEnabled) {
+        if (bgPerm.status === 'granted') {
+          if (!isRunning) {
+            // Restart task if it should be running but isn't
+            await logEvent("🔄 Auto-detect restart (missing task)");
+            await Location.startLocationUpdatesAsync(DRAFT_TASK, {
+              accuracy: Location.Accuracy.High,
+              distanceInterval: 10,
+              timeInterval: 8000,
+              foregroundService: {
+                notificationTitle: 'Bikel auto-detect active',
+                notificationBody: 'Watching for bike rides in background…',
+                notificationColor: '#444',
+              },
+              pausesUpdatesAutomatically: false,
+              showsBackgroundLocationIndicator: false,
+            });
+          } else {
+            await logEvent("✅ Auto-detect: ACTIVE & verified");
+          }
+          setAutoDetect(true);
+        } else {
+          // Permission lost
+          await logEvent(`⚠️ Auto-detect disabled (missing permission: ${bgPerm.status})`);
+          await AsyncStorage.setItem('bikel_auto_detect', 'false');
+          if (isRunning) await Location.stopLocationUpdatesAsync(DRAFT_TASK);
+          setAutoDetect(false);
+        }
+      } else {
+        if (isRunning) {
+          await logEvent("🛑 Auto-detect cleanup (lingering task)");
+          await Location.stopLocationUpdatesAsync(DRAFT_TASK);
+        }
+        setAutoDetect(false);
+      }
+    } catch (e) { console.error('[Sync] Failed:', e); }
+  };
+
   // ── Toggle auto-detect on/off ──────────────────────
   const toggleAutoDetect = async (value: boolean) => {
     setAutoDetect(value);
     await AsyncStorage.setItem('bikel_auto_detect', value ? 'true' : 'false');
-    if (value) {
-      await Notifications.requestPermissionsAsync();
-
-      // Check background permission explicitly — show clear message if missing
-      try {
-        const { status: bgStatus } = await Location.getBackgroundPermissionsAsync();
-        if (bgStatus !== 'granted') {
-          Alert.alert(
-            'Background Location Required',
-            'Go to Settings → Apps → Bikel → Permissions → Location and choose "Allow all the time".',
-            [{ text: 'OK' }]
-          );
-          setAutoDetect(false);
-          await AsyncStorage.setItem('bikel_auto_detect', 'false');
-          return;
-        }
-      } catch (e) {
-        console.warn('[AutoDetect] Could not check bg permission:', e);
-      }
-
-      // Clean up any lingering legacy passive scan task
-      try {
-        const legacyRunning = await Location.hasStartedLocationUpdatesAsync(PASSIVE_SCAN_TASK);
-        if (legacyRunning) await Location.stopLocationUpdatesAsync(PASSIVE_SCAN_TASK);
-      } catch (e) { /* expected on fresh installs */ }
-
-      // Reset state machine to warmup
-      const now = Date.now();
-      await AsyncStorage.setItem('bikel_draft_state', JSON.stringify({
-        phase: 'warmup', warmupCount: 0, route: [], spikes: 0, startTime: now, lastMovingTime: now,
-      }));
-
-      // Start single always-on draft task with High accuracy
-      // (Balanced returns null speed on most Android devices — High is required)
-      try {
-        const isRunning = await Location.hasStartedLocationUpdatesAsync(DRAFT_TASK);
-        if (!isRunning) {
-          await Location.startLocationUpdatesAsync(DRAFT_TASK, {
-            accuracy: Location.Accuracy.High,
-            distanceInterval: 10,
-            timeInterval: 8000,
-            foregroundService: {
-              notificationTitle: 'Bikel auto-detect active',
-              notificationBody: 'Watching for bike rides in background',
-              notificationColor: '#444',
-            },
-            pausesUpdatesAutomatically: false,
-            showsBackgroundLocationIndicator: false,
-          });
-          console.log('[AutoDetect] DRAFT_TASK started');
-        }
-      } catch (e: any) {
-        console.error('[AutoDetect] Failed to start DRAFT_TASK:', e);
-        Alert.alert('Could Not Start Auto-Detect', e?.message || 'Unknown error.');
-        setAutoDetect(false);
-        await AsyncStorage.setItem('bikel_auto_detect', 'false');
-      }
-    } else {
-      try {
-        const draftRunning = await Location.hasStartedLocationUpdatesAsync(DRAFT_TASK);
-        if (draftRunning) await Location.stopLocationUpdatesAsync(DRAFT_TASK);
-        const legacyRunning = await Location.hasStartedLocationUpdatesAsync(PASSIVE_SCAN_TASK);
-        if (legacyRunning) await Location.stopLocationUpdatesAsync(PASSIVE_SCAN_TASK);
-        await AsyncStorage.removeItem('bikel_draft_state');
-      } catch (e) { /* non-fatal */ }
-      console.log('[AutoDetect] Stopped');
-    }
+    await syncAutoDetectState();
   };
 
   // ── Mount ──────────────────────────────────────────
   useEffect(() => {
     let mounted = true;
-    connectNDK().then(async () => {
-      if (mounted) console.log('[NDK] Connected on load.');
+    // Connect NDK first, then immediately start fetching feeds in the background.
+    // This fires before the slow SecureStore/NWC/GPS awaits so relays have
+    // maximum time to respond while the rest of init is happening.
+    connectNDK().then(() => {
+      if (mounted) {
+        console.log('[NDK] Connected on load.');
+        loadFeeds();
+      }
     });
 
     (async () => {
+      await logEvent("🚀 App Mount: Background System Sync Initiated");
       const savedNwc = await SecureStore.getItemAsync('bikel_nwc_uri');
       if (savedNwc) {
         setNwcURI(savedNwc);
@@ -489,67 +517,163 @@ export default function App() {
         console.error("Failed to fetch public key hex on mount:", e);
       }
 
-      // Load auto-detect setting — and re-sync task state on mount
-      const savedAutoDetect = await AsyncStorage.getItem('bikel_auto_detect');
-      if (savedAutoDetect === 'true') {
-        setAutoDetect(true);
-        // Always stop-then-restart on mount — this is the only reliable way to
-        // ensure the task is running after an app update, reboot, or cold start.
-        // startLocationUpdatesAsync alone would throw if called twice without stopping.
-        try {
-          const bgPerm = await Location.getBackgroundPermissionsAsync();
-          if (bgPerm.status === 'granted') {
-            try {
-              const wasRunning = await Location.hasStartedLocationUpdatesAsync(DRAFT_TASK);
-              if (wasRunning) await Location.stopLocationUpdatesAsync(DRAFT_TASK);
-            } catch (_) { /* wasn't running — fine */ }
-            // Preserve recording state if mid-ride, otherwise reset to warmup
-            const existingStateRaw = await AsyncStorage.getItem('bikel_draft_state');
-            const existingState = existingStateRaw ? JSON.parse(existingStateRaw) : null;
-            if (!existingState || existingState.phase !== 'recording') {
-              const now = Date.now();
-              await AsyncStorage.setItem('bikel_draft_state', JSON.stringify({
-                phase: 'warmup', warmupCount: 0, route: [], spikes: 0, startTime: now, lastMovingTime: now,
-              }));
-            }
-            await Location.startLocationUpdatesAsync(DRAFT_TASK, {
-              accuracy: Location.Accuracy.High,
-              distanceInterval: 10,
-              timeInterval: 8000,
-              foregroundService: {
-                notificationTitle: 'Bikel auto-detect active',
-                notificationBody: 'Watching for bike rides in background…',
-                notificationColor: '#444',
-              },
-              pausesUpdatesAutomatically: false,
-              showsBackgroundLocationIndicator: false,
-            });
-            console.log('[Mount] DRAFT_TASK started');
-          } else {
-            setAutoDetect(false);
-            await AsyncStorage.setItem('bikel_auto_detect', 'false');
-            console.warn('[Mount] Auto-detect was ON but background permission missing — disabled');
-          }
-        } catch (e) {
-          console.warn('[Mount] Could not start DRAFT_TASK:', e);
-        }
-      }
+      // Re-sync auto-detect task and UI state
+      await syncAutoDetectState();
 
       // Load drafts
       await loadDrafts();
 
       let { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== 'granted') return;
-      let loc = await Location.getCurrentPositionAsync({});
-      setLocation(loc);
-      setMapCenter({ lat: loc.coords.latitude, lng: loc.coords.longitude });
+      // Show last known position instantly so the map isn't blank while waiting
+      const lastKnown = await Location.getLastKnownPositionAsync({});
+      if (lastKnown) {
+        setLocation(lastKnown);
+        setMapCenter({ lat: lastKnown.coords.latitude, lng: lastKnown.coords.longitude });
+      }
+      // Then get a fresh fix in the background without blocking
+      Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }).then(loc => {
+        setLocation(loc);
+        setMapCenter({ lat: loc.coords.latitude, lng: loc.coords.longitude });
+      }).catch(() => { /* non-fatal, last known is fine */ });
     })();
 
-    // Poll for new drafts every 30s (in case one was saved in background)
-    const draftPoller = setInterval(loadDrafts, 30000);
+    // Poll for new drafts every 60s (in case one was saved in background)
+    const draftPoller = setInterval(() => {
+      loadDrafts();
+      logEvent("🔄 Periodic draft sync");
+    }, 60000);
 
-    return () => { mounted = false; clearInterval(draftPoller); };
+    // Listen for AppState changes (to re-sync when coming back from background/settings)
+    const appStateListener = AppState.addEventListener('change', async (nextAppState) => {
+      if (nextAppState === 'active') {
+        await syncAutoDetectState();
+        await loadDrafts();
+      }
+    });
+
+    return () => {
+      mounted = false;
+      clearInterval(draftPoller);
+      appStateListener.remove();
+    };
   }, []);
+
+  // ── Hardware Back Button Handling ──────────────────
+  useEffect(() => {
+    const onBackPress = () => {
+      // DMs (Inner view)
+      if (activeDMUser) { setActiveDMUser(null); return true; }
+
+      // Discussion (Inner view)
+      if (showDiscussion) { setShowDiscussion(false); return true; }
+
+      // Author Profile (Inner view)
+      if (viewingAuthor) { setViewingAuthor(null); return true; }
+
+      // Route Preview (Map layer)
+      if (selectedRoute.length > 0) { setSelectedRoute([]); return true; }
+
+      // Debug Logs (Inner view)
+      if (showLogs) { setShowLogs(false); return true; }
+
+      // Content Leaderboard (Inner view)
+      if (selectedContest) { setSelectedContest(null); return true; }
+
+      // Post Ride / Draft Review (Modals)
+      if (showPostRideModal) { setShowPostRideModal(false); return true; }
+      if (selectedDraft) { setSelectedDraft(null); return true; }
+
+      // Settings / History / Schedule / Feed (Top-level views)
+      if (showSettings) { setShowSettings(false); return true; }
+      if (showHistory) { setShowHistory(false); return true; }
+      if (showSchedule) { setShowSchedule(false); return true; }
+      if (showFeed) { setShowFeed(false); return true; }
+
+      // If none of the above are active, allow default behavior (exit app)
+      return false;
+    };
+
+    const backHandler = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+    return () => backHandler.remove();
+  }, [activeDMUser, showDiscussion, viewingAuthor, selectedRoute, selectedContest, showPostRideModal, selectedDraft, showSettings, showHistory, showSchedule, showFeed, showLogs]);
+
+  // ── Map Sync Logic ──────────────────────────────────
+  const rideAgeColor = (rideTime: number): { color: string; opacity: number } => {
+    const ageMs = Date.now() - rideTime * 1000;
+    const ageDays = ageMs / (1000 * 60 * 60 * 24);
+    if (ageDays <= 1) return { color: '#00ffaa', opacity: 0.7 };
+    if (ageDays <= 14) {
+      const t = (ageDays - 1) / 13;
+      const r = Math.round(0x00 + t * (0xea - 0x00));
+      const g = Math.round(0xff + t * (0xb3 - 0xff));
+      const b = Math.round(0xaa + t * (0x08 - 0xaa));
+      return { color: `rgb(${r},${g},${b})`, opacity: 0.6 - t * 0.2 };
+    }
+    const t = Math.min((ageDays - 14) / 46, 1);
+    const r = Math.round(0xea + t * (0x3a - 0xea));
+    const g = Math.round(0xb3 + t * (0x32 - 0xb3));
+    const b = Math.round(0x08 + t * (0x00 - 0x08));
+    return { color: `rgb(${r},${g},${b})`, opacity: 0.4 - t * 0.25 };
+  };
+
+  const filteredGlobalRides = useMemo(() => {
+    return globalRides.filter(r =>
+      r.visibility === 'full' &&
+      r.route &&
+      r.route.length > 0 &&
+      (r.confidence === undefined || r.confidence >= 0.7)
+    );
+  }, [globalRides]);
+
+  const mapMarkers = useMemo(() => {
+    const markers: any[] = location ? [{
+      id: 'current_pos',
+      position: { lat: location.coords.latitude, lng: location.coords.longitude },
+      icon: '🚴',
+      size: [32, 32]
+    }] : [];
+
+    filteredGlobalRides.forEach(ride => {
+      markers.push({
+        id: `ride_${ride.id}`,
+        position: { lat: ride.route[0][0], lng: ride.route[0][1] },
+        icon: '📍',
+        size: [24, 24],
+      });
+    });
+
+    return markers;
+  }, [location, filteredGlobalRides]);
+
+  const mapShapes = useMemo(() => {
+    const shapes: any[] = [];
+
+    // 1. Draw all global rides first (bottom layers)
+    filteredGlobalRides.forEach(ride => {
+      const { color, opacity } = rideAgeColor(ride.time);
+      shapes.push({
+        shapeType: MapShapeType.POLYLINE,
+        positions: ride.route.map(([lat, lng]) => ({ lat, lng })),
+        color: color,
+        width: 3,
+        opacity: opacity,
+      });
+    });
+
+    // 2. Draw the highlighted route last (top layer)
+    if (selectedRoute.length > 0) {
+      shapes.push({
+        shapeType: MapShapeType.POLYLINE,
+        positions: selectedRoute,
+        color: "#ff3300", // Brighter Red-Orange
+        width: 8, // Thicker
+        opacity: 1.0,
+      });
+    }
+
+    return shapes;
+  }, [selectedRoute, filteredGlobalRides]);
 
   useEffect(() => {
     if (showDiscussion && selectedDiscussionRide) {
@@ -579,6 +703,7 @@ export default function App() {
   };
 
   const loadFeeds = async () => {
+    setIsFeedLoading(true);
     try {
       const results = await Promise.allSettled([
         fetchMyRides(),
@@ -606,6 +731,8 @@ export default function App() {
       if (extractedPubkeys.length > 0) loadAuthorProfiles(extractedPubkeys).catch(console.error);
     } catch (e) {
       console.error("Critical error in loadFeeds:", e);
+    } finally {
+      setIsFeedLoading(false);
     }
   };
 
@@ -623,10 +750,6 @@ export default function App() {
       setIsRefreshing(false);
     }
   };
-
-  useEffect(() => {
-    loadFeeds();
-  }, []);
 
   const getDistanceMiles = (lat1: number, lon1: number, lat2: number, lon2: number) => {
     return distanceMiles(lat1, lon1, lat2, lon2);
@@ -848,6 +971,39 @@ export default function App() {
     setShowPostRideModal(true);
   };
 
+  const pickAndUploadSchedPhoto = async () => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') { Alert.alert('Permission Required', 'Allow photo library access to attach a photo.'); return; }
+    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, allowsEditing: true, quality: 0.8 });
+    if (result.canceled || !result.assets?.length) return;
+    setIsUploadingSchedPhoto(true);
+    try {
+      const url = await uploadPhoto(result.assets[0].uri);
+      setSchedImage(url);
+    } catch (e: any) {
+      Alert.alert('Upload Failed', e.message || 'Unknown error.');
+    } finally {
+      setIsUploadingSchedPhoto(false);
+    }
+  };
+
+  // ── Photo picker + Blossom upload ─────────────────
+  const pickAndUploadPhoto = async () => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') { Alert.alert('Permission Required', 'Allow photo library access to attach a photo.'); return; }
+    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, allowsEditing: true, quality: 0.8 });
+    if (result.canceled || !result.assets?.length) return;
+    setIsUploadingPhoto(true);
+    try {
+      const url = await uploadPhoto(result.assets[0].uri);
+      setPostRideImageUrl(url);
+    } catch (e: any) {
+      Alert.alert('Upload Failed', e.message || 'Unknown error.');
+    } finally {
+      setIsUploadingPhoto(false);
+    }
+  };
+
   return (
     <View style={styles.container}>
       <View style={styles.map}>
@@ -863,16 +1019,21 @@ export default function App() {
             baseLayer: true,
             url: "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
           }]}
-          mapMarkers={location ? [{
-            position: { lat: location.coords.latitude, lng: location.coords.longitude },
-            icon: '🚴',
-            size: [32, 32]
-          }] : []}
-          mapShapes={selectedRoute.length > 0 ? [{
-            shapeType: MapShapeType.POLYLINE,
-            positions: selectedRoute,
-            color: "#00ccff",
-          }] : []}
+          mapMarkers={mapMarkers}
+          mapShapes={mapShapes}
+          onMessageReceived={(message: any) => {
+            if (message.event === WebViewLeafletEvents.ON_MAP_MARKER_CLICKED) {
+              const markerID = message.payload?.mapMarkerID;
+              if (markerID && markerID.startsWith('ride_')) {
+                const rideId = markerID.replace('ride_', '');
+                const ride = filteredGlobalRides.find(r => r.id === rideId);
+                if (ride) {
+                  setSelectedDiscussionRide(ride);
+                  setShowDiscussion(true);
+                }
+              }
+            }
+          }}
         />
       </View>
 
@@ -940,7 +1101,7 @@ export default function App() {
             <View style={[styles.settingsSection, { borderColor: autoDetect ? 'rgba(234,179,8,0.4)' : 'rgba(255,255,255,0.05)', borderWidth: 1 }]}>
               <Text style={[styles.settingsLabel, { color: '#eab308' }]}>AUTO-DETECT RIDES</Text>
               <Text style={{ color: '#9ba1a6', fontSize: 12, marginBottom: 16, lineHeight: 18 }}>
-                Passively monitors your movement and automatically records bike rides in the background. Requires "Allow all the time" location permission. Drafts appear in the 📥 tab.
+                Passively monitors your movement and automatically records bike rides in the background. Requires "Allow all the time" location permission.
               </Text>
               <TouchableOpacity
                 style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: autoDetect ? 'rgba(234,179,8,0.15)' : 'rgba(255,255,255,0.05)', padding: 14, borderRadius: 10, borderWidth: 1, borderColor: autoDetect ? '#eab308' : 'rgba(255,255,255,0.1)' }}
@@ -1002,6 +1163,17 @@ export default function App() {
             </View>
 
             <View style={[styles.settingsSection, { marginBottom: 60 }]}>
+              <Text style={styles.settingsLabel}>DEBUG & TROUBLESHOOTING</Text>
+              <TouchableOpacity
+                style={{ backgroundColor: 'rgba(255,255,255,0.05)', padding: 14, borderRadius: 10, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)', alignItems: 'center' }}
+                onPress={() => { loadLogs(); setShowLogs(true); }}
+              >
+                <Text style={{ color: '#00ccff', fontWeight: 'bold' }}>🔍 VIEW DEBUG LOGS</Text>
+              </TouchableOpacity>
+              <Text style={{ color: '#666', fontSize: 11, marginTop: 8, textAlign: 'center' }}>Check here if the app isn't working as expected.</Text>
+            </View>
+
+            <View style={[styles.settingsSection, { marginBottom: 60 }]}>
               <Text style={styles.settingsLabel}>NOSTR WALLET CONNECT (NIP-47)</Text>
               <TextInput style={styles.keyInput} placeholder="nostr+walletconnect://..." placeholderTextColor="rgba(255,255,255,0.3)" value={nwcURI} onChangeText={setNwcURI} autoCapitalize="none" />
               <TouchableOpacity style={[styles.saveButton, { backgroundColor: '#eab308' }]} onPress={async () => {
@@ -1020,6 +1192,44 @@ export default function App() {
             </View>
           </ScrollView>
         </KeyboardAvoidingView>
+      )}
+
+      {/* Debug Logs Overlay */}
+      {showLogs && (
+        <View style={styles.historyOverlay}>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+            <Text style={styles.historyTitle}>Debug Logs</Text>
+            <TouchableOpacity onPress={() => setShowLogs(false)} style={{ padding: 4 }}><X size={24} color="#fff" /></TouchableOpacity>
+          </View>
+          <ScrollView style={{ flex: 1, backgroundColor: '#000', borderRadius: 8, padding: 10, borderWidth: 1, borderColor: '#222' }}>
+            {debugLogs.length === 0 ? (
+              <Text style={{ color: '#666', fontStyle: 'italic', textAlign: 'center', marginTop: 20 }}>No logs recorded yet.</Text>
+            ) : (
+              debugLogs.map((log, i) => (
+                <Text key={i} style={{ color: '#0f0', fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace', fontSize: 11, marginBottom: 4 }}>
+                  {log}
+                </Text>
+              ))
+            )}
+          </ScrollView>
+          <View style={{ flexDirection: 'row', gap: 10, marginTop: 16 }}>
+            <TouchableOpacity
+              style={{ flex: 1, backgroundColor: '#222', padding: 14, borderRadius: 10, alignItems: 'center' }}
+              onPress={async () => {
+                await Clipboard.setStringAsync(debugLogs.join('\n'));
+                Alert.alert("Copied", "Logs copied to clipboard.");
+              }}
+            >
+              <Text style={{ color: '#fff', fontWeight: 'bold' }}>COPY ALL</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={{ flex: 1, backgroundColor: 'rgba(255,77,79,0.1)', paddingVertical: 14, borderRadius: 10, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,77,79,0.2)' }}
+              onPress={clearLogs}
+            >
+              <Text style={{ color: '#ff4d4f', fontWeight: 'bold' }}>CLEAR</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
       )}
 
       {/* Ride History Overlay */}
@@ -1137,7 +1347,15 @@ export default function App() {
       {/* Global Feed + Drafts Overlay */}
       {showFeed && (
         <View style={styles.historyOverlay}>
-          <Text style={styles.historyTitle}>Global Feed</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+            <Text style={styles.historyTitle}>Global Feed</Text>
+            {isFeedLoading && (
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <ActivityIndicator size="small" color="#00ffaa" />
+                <Text style={{ color: '#00ffaa', fontSize: 12 }}>Loading…</Text>
+              </View>
+            )}
+          </View>
           {/* 4-tab bar */}
           <View style={{ marginBottom: 12 }}>
             <View style={{ flexDirection: 'row', backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: 8, padding: 4, gap: 4 }}>
@@ -1145,7 +1363,7 @@ export default function App() {
                 { id: 'contests', label: 'CHALLENGES', activeColor: '#eab308' },
                 { id: 'rides', label: 'GROUP RIDES', activeColor: '#00ffaa' },
                 { id: 'feed', label: 'RECENT RIDES', activeColor: '#00ccff' },
-                { id: 'drafts', label: `DRAFTS ${drafts.length > 0 ? `(${drafts.length})` : ''}`, activeColor: '#eab308' },
+                { id: 'drafts', label: `DRAFTS${drafts.length > 0 ? ` (${drafts.length})` : ''}`, activeColor: '#eab308' },
               ].map(tab => (
                 <TouchableOpacity
                   key={tab.id}
@@ -1279,17 +1497,17 @@ export default function App() {
                               <Text style={{ color: isPast ? '#888' : '#eab308', fontSize: 12, fontWeight: 'bold' }}>{c.feeSats} sats</Text>
                             </View>
                           </View>
-                          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
                             <TouchableOpacity onPress={async () => {
                               setSelectedContest(c); setShowFeed(false); setIsLoadingLeaderboard(true);
                               const lb = await fetchRideLeaderboard(c.attendees, c.startTime, c.endTime, c.parameter);
                               setContestLeaderboard(lb); setIsLoadingLeaderboard(false);
                             }}>
-                              <Text style={{ color: '#00ccff', fontSize: 12, textDecorationLine: 'underline' }}>View Leaderboard ({c.attendees.length} Joined)</Text>
+                              <Text style={{ color: '#00ccff', fontSize: 12, textDecorationLine: 'underline' }}>Leaderboard ({c.attendees.length} Joined)</Text>
                             </TouchableOpacity>
                             {!isPast && (
                               <TouchableOpacity
-                                style={{ backgroundColor: c.attendees.includes(currentHex) ? 'rgba(234, 179, 8, 0.2)' : '#eab308', paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20, flexDirection: 'row', alignItems: 'center', gap: 4 }}
+                                style={{ backgroundColor: c.attendees.includes(currentHex) ? 'rgba(234, 179, 8, 0.2)' : '#eab308', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 20, flexDirection: 'row', alignItems: 'center', gap: 4 }}
                                 disabled={c.attendees.includes(currentHex)}
                                 onPress={async () => {
                                   if (!isNWCConnected && c.feeSats > 0) { Alert.alert("Wallet Required", "Connect your Lightning Wallet in Settings to pay the entry fee."); return; }
@@ -1301,7 +1519,7 @@ export default function App() {
                                 }}
                               >
                                 <Zap size={14} color={c.attendees.includes(currentHex) ? "#eab308" : "#000"} />
-                                <Text style={{ color: c.attendees.includes(currentHex) ? '#eab308' : '#000', fontWeight: 'bold' }}>{c.attendees.includes(currentHex) ? 'ENTERED' : 'ENTER CHALLENGE'}</Text>
+                                <Text style={{ color: c.attendees.includes(currentHex) ? '#eab308' : '#000', fontWeight: 'bold', fontSize: 12 }}>{c.attendees.includes(currentHex) ? 'ENTERED' : 'ENTER'}</Text>
                               </TouchableOpacity>
                             )}
                             {isPast && <Text style={{ color: '#aaa', fontSize: 12, fontWeight: 'bold' }}>EXPIRED</Text>}
@@ -1350,41 +1568,91 @@ export default function App() {
                               <Text style={{ color: '#aaa', fontSize: 12, marginBottom: 8 }}>{new Date(r.startTime * 1000).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}{r.timezone ? ` (${r.timezone})` : ""}</Text>
                               <Text style={{ color: '#fff', fontSize: 13, marginBottom: 8 }}>{r.description}</Text>
                               <Text style={{ color: '#888', fontSize: 12, marginBottom: 12 }}>📍 {r.locationStr}</Text>
+
+                              <View style={{ height: 1, backgroundColor: 'rgba(255,255,255,0.05)', marginBottom: 12 }} />
+
                               <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                                <View style={{ flexDirection: 'row', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+                                {/* Left: Secondary Icon Actions */}
+                                <View style={{ flexDirection: 'row', gap: 14, alignItems: 'center' }}>
                                   {r.route && r.route.length > 0 && (
                                     <TouchableOpacity onPress={() => { setShowFeed(false); setSelectedRoute(r.route!.map(pt => ({ lat: pt[0], lng: pt[1] }))); }}>
-                                      <Text style={{ color: '#00ffaa', fontSize: 11, fontWeight: 'bold' }}>🗺️ Map</Text>
+                                      <Map size={18} color="#00ffaa" />
                                     </TouchableOpacity>
                                   )}
                                   <TouchableOpacity onPress={() => { setSelectedDiscussionRide(r); setShowDiscussion(true); }}>
-                                    <Text style={{ color: '#00ccff', fontSize: 11, fontWeight: 'bold' }}>💬 Discuss</Text>
+                                    <MessageSquare size={18} color="#00ccff" />
                                   </TouchableOpacity>
                                   <TouchableOpacity onPress={() => setActiveDMUser(r.hexPubkey)}>
-                                    <Text style={{ color: '#00ccff', fontSize: 11, textDecorationLine: 'underline' }}>Message Org</Text>
+                                    <Mail size={18} color="#00ccff" />
                                   </TouchableOpacity>
+
+                                  {r.hexPubkey === currentHex && (
+                                    <TouchableOpacity
+                                      onPress={() => Alert.alert('Delete Ride', 'Are you sure you want to delete this group ride?', [
+                                        { text: 'Cancel', style: 'cancel' },
+                                        {
+                                          text: 'Delete', style: 'destructive', onPress: async () => {
+                                            const deleted = await deleteRideEvent(r);
+                                            if (deleted) {
+                                              Alert.alert("Success", "Ride deleted.");
+                                              setScheduledRides(await fetchScheduledRides());
+                                            } else {
+                                              Alert.alert("Error", "Could not delete ride event.");
+                                            }
+                                          }
+                                        }
+                                      ])}
+                                    >
+                                      <Trash2 size={18} color="#ff4d4f" />
+                                    </TouchableOpacity>
+                                  )}
+                                </View>
+
+                                {/* Right: Primary Actions (Zap & RSVP) */}
+                                <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
                                   {isNWCConnected && (
-                                    <TouchableOpacity disabled={isZapping} style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }} onPress={async () => {
-                                      if (isZapping) return; setIsZapping(true);
-                                      try { await zapRideEvent(r.id, r.hexPubkey, r.kind, 21, "Thanks for organizing!"); Alert.alert("Zap Sent", "21 sats sent!"); }
-                                      catch (e: any) { Alert.alert("Zap Failed", e.message || "Unknown error"); }
-                                      setIsZapping(false);
-                                    }}>
+                                    <TouchableOpacity
+                                      disabled={isZapping}
+                                      style={{ backgroundColor: 'rgba(234,179,8,0.1)', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 16, flexDirection: 'row', alignItems: 'center', gap: 4, borderWidth: 1, borderColor: 'rgba(234,179,8,0.2)' }}
+                                      onPress={() => {
+                                        Alert.alert('Send Zap', `Zap ${displayName} 21 sats?`, [
+                                          { text: 'Cancel', style: 'cancel' },
+                                          {
+                                            text: 'Zap', onPress: async () => {
+                                              if (isZapping) return; setIsZapping(true);
+                                              try { await zapRideEvent(r.id, r.hexPubkey, r.kind, 21, "Thanks for organizing!"); Alert.alert("Zap Sent", "21 sats sent!"); }
+                                              catch (e: any) { Alert.alert("Zap Failed", e.message || "Unknown error"); }
+                                              setIsZapping(false);
+                                            }
+                                          }
+                                        ]);
+                                      }}
+                                    >
                                       <Zap size={14} color={isZapping ? "#ccc" : "#eab308"} />
                                       <Text style={{ color: '#eab308', fontSize: 12, fontWeight: 'bold' }}>21</Text>
                                     </TouchableOpacity>
                                   )}
+
+                                  <TouchableOpacity
+                                    style={{
+                                      backgroundColor: r.attendees.includes(currentHex) ? 'rgba(0,255,170,0.1)' : '#00ffaa',
+                                      borderColor: r.attendees.includes(currentHex) ? '#00ffaa' : 'transparent',
+                                      borderWidth: 1,
+                                      paddingHorizontal: 16,
+                                      paddingVertical: 6,
+                                      borderRadius: 20
+                                    }}
+                                    disabled={r.attendees.includes(currentHex)}
+                                    onPress={async () => {
+                                      const joined = await publishRSVP(r);
+                                      if (joined) { Alert.alert("Success", "You've RSVPd!"); setScheduledRides(await fetchScheduledRides()); }
+                                      else Alert.alert("Error", "Could not RSVP.");
+                                    }}>
+                                    <Text style={{ color: r.attendees.includes(currentHex) ? '#00ffaa' : '#000', fontSize: 12, fontWeight: 'bold' }}>
+                                      {r.attendees.includes(currentHex) ? 'Attending' : 'RSVP'}
+                                    </Text>
+                                  </TouchableOpacity>
                                 </View>
-                                <TouchableOpacity
-                                  style={{ backgroundColor: r.attendees.includes(currentHex) ? 'rgba(0,255,170,0.1)' : 'rgba(255,255,255,0.1)', borderColor: r.attendees.includes(currentHex) ? '#00ffaa' : 'transparent', borderWidth: 1, paddingHorizontal: 16, paddingVertical: 6, borderRadius: 20 }}
-                                  disabled={r.attendees.includes(currentHex)}
-                                  onPress={async () => {
-                                    const joined = await publishRSVP(r);
-                                    if (joined) { Alert.alert("Success", "You've RSVPd!"); setScheduledRides(await fetchScheduledRides()); }
-                                    else Alert.alert("Error", "Could not RSVP.");
-                                  }}>
-                                  <Text style={{ color: r.attendees.includes(currentHex) ? '#00ffaa' : '#fff', fontSize: 12, fontWeight: 'bold' }}>{r.attendees.includes(currentHex) ? 'Attending' : 'RSVP'}</Text>
-                                </TouchableOpacity>
                               </View>
                             </View>
                           );
@@ -1398,6 +1666,30 @@ export default function App() {
                                 <Text style={{ color: '#888', fontWeight: 'bold' }}>{r.name}</Text>
                                 <Text style={{ color: '#666', fontSize: 12, marginBottom: 4 }}>{new Date(r.startTime * 1000).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}</Text>
                                 <Text style={{ color: '#888', fontSize: 13 }}>{r.description}</Text>
+                                {r.hexPubkey === currentHex && (
+                                  <>
+                                    <View style={{ height: 1, backgroundColor: 'rgba(255,255,255,0.05)', marginVertical: 12 }} />
+                                    <TouchableOpacity
+                                      style={{ alignSelf: 'flex-start' }}
+                                      onPress={() => Alert.alert('Delete Past Ride', 'Are you sure you want to delete this past group ride?', [
+                                        { text: 'Cancel', style: 'cancel' },
+                                        {
+                                          text: 'Delete', style: 'destructive', onPress: async () => {
+                                            const deleted = await deleteRideEvent(r);
+                                            if (deleted) {
+                                              Alert.alert("Success", "Ride deleted.");
+                                              setScheduledRides(await fetchScheduledRides());
+                                            } else {
+                                              Alert.alert("Error", "Could not delete ride event.");
+                                            }
+                                          }
+                                        }
+                                      ])}
+                                    >
+                                      <Trash2 size={18} color="#ff4d4f" />
+                                    </TouchableOpacity>
+                                  </>
+                                )}
                               </View>
                             ))}
                           </>
@@ -1431,11 +1723,18 @@ export default function App() {
                           <Text style={styles.historyStat}>{r.distance} mi</Text>
                           <Text style={styles.historyStat}>{r.duration}</Text>
                           {isNWCConnected && (
-                            <TouchableOpacity disabled={isZapping} style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginLeft: 'auto', backgroundColor: 'rgba(234,179,8,0.1)', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12, borderWidth: 1, borderColor: 'rgba(234,179,8,0.3)' }} onPress={async () => {
-                              if (isZapping) return; setIsZapping(true);
-                              try { await zapRideEvent(r.id, r.hexPubkey, r.kind, 21, "Great ride!"); Alert.alert("Zap Sent", "21 sats sent!"); }
-                              catch (e: any) { Alert.alert("Zap Failed", e.message || "Unknown error"); }
-                              setIsZapping(false);
+                            <TouchableOpacity disabled={isZapping} style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginLeft: 'auto', backgroundColor: 'rgba(234,179,8,0.1)', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12, borderWidth: 1, borderColor: 'rgba(234,179,8,0.3)' }} onPress={() => {
+                              Alert.alert('Send Zap', `Zap ${displayName} 21 sats?`, [
+                                { text: 'Cancel', style: 'cancel' },
+                                {
+                                  text: 'Zap', onPress: async () => {
+                                    if (isZapping) return; setIsZapping(true);
+                                    try { await zapRideEvent(r.id, r.hexPubkey, r.kind, 21, "Great ride!"); Alert.alert("Zap Sent", "21 sats sent!"); }
+                                    catch (e: any) { Alert.alert("Zap Failed", e.message || "Unknown error"); }
+                                    setIsZapping(false);
+                                  }
+                                }
+                              ]);
                             }}>
                               <Zap size={12} color={isZapping ? "#ccc" : "#eab308"} />
                               <Text style={{ color: '#eab308', fontSize: 12, fontWeight: 'bold' }}>21</Text>
@@ -1480,6 +1779,30 @@ export default function App() {
               <TextInput style={styles.keyInput} placeholder="e.g. Saturday Morning Coffee Ride" placeholderTextColor="rgba(255,255,255,0.3)" value={schedName} onChangeText={setSchedName} />
               <Text style={styles.settingsLabel}>DESCRIPTION</Text>
               <TextInput style={[styles.keyInput, { height: 80 }]} placeholder="Pace, expected distance, drop/no-drop..." placeholderTextColor="rgba(255,255,255,0.3)" multiline value={schedDesc} onChangeText={setSchedDesc} />
+              {schedType === 'ride' && (
+                <>
+                  <Text style={styles.settingsLabel}>PHOTO (OPTIONAL)</Text>
+                  {schedImage ? (
+                    <View style={{ marginBottom: 12 }}>
+                      <Image source={{ uri: schedImage }} style={{ width: '100%', height: 140, borderRadius: 8, marginBottom: 8 }} />
+                      <TouchableOpacity onPress={() => setSchedImage('')} style={{ alignItems: 'center' }}>
+                        <Text style={{ color: '#ff4d4f', fontSize: 12 }}>✕ Remove photo</Text>
+                      </TouchableOpacity>
+                    </View>
+                  ) : (
+                    <TouchableOpacity
+                      style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: 'rgba(255,255,255,0.07)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.15)', borderRadius: 8, paddingVertical: 14, marginBottom: 12 }}
+                      disabled={isUploadingSchedPhoto}
+                      onPress={pickAndUploadSchedPhoto}
+                    >
+                      {isUploadingSchedPhoto
+                        ? <><ActivityIndicator size="small" color="#00ffaa" /><Text style={{ color: '#00ffaa', fontWeight: 'bold' }}>Uploading…</Text></>
+                        : <Text style={{ color: '#00ffaa', fontWeight: 'bold' }}>📷 Pick Photo from Gallery</Text>
+                      }
+                    </TouchableOpacity>
+                  )}
+                </>
+              )}
               <Text style={styles.settingsLabel}>START TIME/DATE</Text>
               <View style={{ flexDirection: 'row', gap: 10, marginBottom: 16 }}>
                 <TouchableOpacity style={[styles.keyInput, { flex: 1, alignItems: 'center', justifyContent: 'center' }]} onPress={() => setShowDatePicker(true)}>
@@ -1534,8 +1857,31 @@ export default function App() {
 
               {schedType === 'contest' && (
                 <>
-                  <Text style={[styles.settingsLabel, { marginTop: 16 }]}>CHALLENGE DURATION (DAYS)</Text>
-                  <TextInput style={[styles.keyInput, { marginBottom: 16 }]} keyboardType="number-pad" value={contestEndDays} onChangeText={setContestEndDays} />
+                  <Text style={[styles.settingsLabel, { marginTop: 16 }]}>CHALLENGE DURATION</Text>
+                  <Text style={[styles.settingsHelp, { marginBottom: 8 }]}>Hours</Text>
+                  <View style={{ flexDirection: 'row', gap: 8, marginBottom: 12 }}>
+                    {['1h', '2h', '4h', '8h'].map(opt => (
+                      <TouchableOpacity
+                        key={opt}
+                        style={{ flex: 1, backgroundColor: contestEndDays === opt ? '#00ffaa' : 'rgba(255,255,255,0.1)', paddingVertical: 10, borderRadius: 8, alignItems: 'center', borderColor: 'rgba(255,255,255,0.3)', borderWidth: 1 }}
+                        onPress={() => setContestEndDays(opt)}
+                      >
+                        <Text style={{ color: contestEndDays === opt ? '#000' : '#fff', fontWeight: 'bold', fontSize: 13 }}>{opt}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                  <Text style={[styles.settingsHelp, { marginBottom: 8 }]}>Days</Text>
+                  <View style={{ flexDirection: 'row', gap: 8, marginBottom: 16 }}>
+                    {['1d', '3d', '7d', '14d'].map(opt => (
+                      <TouchableOpacity
+                        key={opt}
+                        style={{ flex: 1, backgroundColor: contestEndDays === opt ? '#00ffaa' : 'rgba(255,255,255,0.1)', paddingVertical: 10, borderRadius: 8, alignItems: 'center', borderColor: 'rgba(255,255,255,0.3)', borderWidth: 1 }}
+                        onPress={() => setContestEndDays(opt)}
+                      >
+                        <Text style={{ color: contestEndDays === opt ? '#000' : '#fff', fontWeight: 'bold', fontSize: 13 }}>{opt}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
                   <Text style={[styles.settingsLabel, { marginTop: 8 }]}>WINNING METRIC</Text>
                   <View style={{ flexDirection: 'row', gap: 5, marginBottom: 16 }}>
                     {[{ id: 'max_distance', label: 'Furthest' }, { id: 'max_elevation', label: 'Elevation' }, { id: 'fastest_mile', label: 'Fastest' }].map(opt => (
@@ -1560,19 +1906,22 @@ export default function App() {
                   if (schedType === 'ride') {
                     let eventsToCreate = schedCadence === 'none' ? 1 : schedOccurrences;
                     for (let i = 0; i < eventsToCreate; i++) {
-                      await publishScheduledRide(schedName, schedCadence !== 'none' ? `${schedDesc}\n\n(Recurring Ride)` : schedDesc, startUnix, schedLocation);
+                      await publishScheduledRide(schedName, schedCadence !== 'none' ? `${schedDesc}\n\n(Recurring Ride)` : schedDesc, startUnix, schedLocation, undefined, schedImage || undefined);
                       if (schedCadence === 'weekly') startUnix += 7 * 24 * 60 * 60;
                       else if (schedCadence === 'biweekly') startUnix += 14 * 24 * 60 * 60;
                       else if (schedCadence === 'monthly') startUnix += 28 * 24 * 60 * 60;
                     }
                   } else {
-                    const endDaysInt = parseInt(contestEndDays) || 1;
-                    const endUnix = startUnix + endDaysInt * 24 * 60 * 60;
+                    const durStr = contestEndDays;
+                    const durSeconds = durStr.endsWith('h')
+                      ? parseInt(durStr) * 3600
+                      : (parseInt(durStr) || 1) * 86400;
+                    const endUnix = startUnix + durSeconds;
                     const feeInt = parseInt(contestFee) || 0;
                     const pubkeys = contestInvites.split(',').map(s => s.trim()).filter(s => s.startsWith('npub'));
                     await publishContestEvent(schedName, schedDesc, startUnix, endUnix, contestParam, feeInt, pubkeys);
                   }
-                  setSchedName(''); setSchedDesc(''); setSchedLocation(''); setSchedCadence('none'); setSchedOccurrences(2); setContestInvites(''); setShowSchedule(false);
+                  setSchedName(''); setSchedDesc(''); setSchedLocation(''); setSchedImage(''); setSchedCadence('none'); setSchedOccurrences(2); setContestInvites(''); setShowSchedule(false);
                   Alert.alert("Success", "Published to Nostr!");
                   try {
                     if (schedType === 'ride') { setScheduledRides(await fetchScheduledRides()); setShowFeed(true); setFeedTab('rides'); }
@@ -1580,7 +1929,7 @@ export default function App() {
                   } catch (fetchErr) { console.error("Failed to refresh feeds after publish", fetchErr); }
                 } catch (e: any) { Alert.alert("Error", e.message); }
               }}>
-                <Text style={styles.saveButtonText}>{schedType === 'ride' ? 'PUBLISH SCHEDULED RIDE' : 'CREATE CONTEST'}</Text>
+                <Text style={styles.saveButtonText}>{schedType === 'ride' ? 'PUBLISH SCHEDULED RIDE' : 'CREATE CHALLENGE'}</Text>
               </TouchableOpacity>
             </View>
           </ScrollView>
@@ -1704,8 +2053,26 @@ export default function App() {
               <TextInput style={styles.keyInput} placeholder="Morning Commute, Personal Record, etc." placeholderTextColor="rgba(255,255,255,0.3)" value={postRideTitle} onChangeText={setPostRideTitle} />
               <Text style={styles.settingsLabel}>DESCRIPTION (OPTIONAL)</Text>
               <TextInput style={[styles.keyInput, { height: 80 }]} placeholder="How was the ride? Any notes?" placeholderTextColor="rgba(255,255,255,0.3)" multiline value={postRideDesc} onChangeText={setPostRideDesc} />
-              <Text style={styles.settingsLabel}>IMAGE URL (OPTIONAL)</Text>
-              <TextInput style={styles.keyInput} placeholder="https://..." placeholderTextColor="rgba(255,255,255,0.3)" value={postRideImageUrl} onChangeText={setPostRideImageUrl} keyboardType="url" autoCapitalize="none" />
+              <Text style={styles.settingsLabel}>PHOTO (OPTIONAL)</Text>
+              {postRideImageUrl ? (
+                <View style={{ marginBottom: 12 }}>
+                  <Image source={{ uri: postRideImageUrl }} style={{ width: '100%', height: 140, borderRadius: 8, marginBottom: 8 }} />
+                  <TouchableOpacity onPress={() => setPostRideImageUrl('')} style={{ alignItems: 'center' }}>
+                    <Text style={{ color: '#ff4d4f', fontSize: 12 }}>✕ Remove photo</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : (
+                <TouchableOpacity
+                  style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: 'rgba(255,255,255,0.07)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.15)', borderRadius: 8, paddingVertical: 14, marginBottom: 12 }}
+                  disabled={isUploadingPhoto}
+                  onPress={pickAndUploadPhoto}
+                >
+                  {isUploadingPhoto
+                    ? <><ActivityIndicator size="small" color="#00ffaa" /><Text style={{ color: '#00ffaa', fontWeight: 'bold' }}>Uploading…</Text></>
+                    : <Text style={{ color: '#00ffaa', fontWeight: 'bold' }}>📷 Pick Photo from Gallery</Text>
+                  }
+                </TouchableOpacity>
+              )}
               <Text style={styles.settingsLabel}>PRIVACY</Text>
               <View style={{ flexDirection: 'row', gap: 10, marginBottom: 16 }}>
                 <TouchableOpacity style={{ flex: 1, backgroundColor: postRidePrivacy === 'full' ? '#00ffaa' : 'rgba(255,255,255,0.1)', paddingVertical: 10, borderRadius: 8, alignItems: 'center' }} onPress={() => setPostRidePrivacy('full')}>
