@@ -22,6 +22,7 @@ const COINOS_API_URL = 'https://coinos.io/api';
 const COINOS_API_KEY = process.env.COINOS_API_KEY;
 const BOT_NSEC = process.env.BOT_NSEC;
 const PLATFORM_FEE_PCT = 0.05; // 5% stays in Coinos as platform fee
+const BOT_VERSION = '1.1.0';
 
 // Default splits for up to 3 winners — used only when the challenge event has no 'payout' tag.
 // The event's 'payout' tag always takes precedence so organizers can customize splits.
@@ -141,6 +142,7 @@ async function fetchWithTimeout(ndk, filter, timeoutMs = 10000) {
             if (!isDone) {
                 console.log(`[Bot] Fetch timeout (${timeoutMs}ms) — returning ${events.size} events.`);
                 isDone = true;
+                sub.stop(); // Stop subscription on timeout
                 resolve(events);
             }
         }, timeoutMs);
@@ -285,10 +287,13 @@ async function announceUpcomingContests(ndk) {
     const oneHour = 60 * 60;
 
     // Kind 33401 — Bikel custom challenge kind
-    const contestsRaw = await fetchWithTimeout(ndk, { kinds: [33401], '#t': ['bikel'] }, 15000);
+    const contestsRaw = await fetchWithTimeout(ndk, { kinds: [33401] }, 20000);
 
     const startingSoon = Array.from(contestsRaw).filter(c => {
         const start = parseInt(c.getMatchingTags('start')[0]?.[1] || '0', 10);
+        const hasBikelTag = c.getMatchingTags('t').some(t => t[1] === 'bikel' || t[1] === 'bikel-challenge');
+        if (!hasBikelTag) return false;
+
         return start > now && start <= now + oneHour;
     });
 
@@ -338,23 +343,42 @@ async function processFinishedContests() {
     try {
         const ndk = await initializeNDK();
         const now = Math.floor(Date.now() / 1000);
-        const yesterday = now - (24 * 60 * 60);
+        // Expand window to 72 hours for robustness
+        const cutoff = now - (72 * 60 * 60);
+        // 1 hour grace period to allow relays to sync and users to upload rides
+        const GRACE_PERIOD = 3600;
 
         await announceUpcomingContests(ndk);
         await startReplyListener(ndk);
 
         // Kind 33401 — Bikel custom challenge kind
-        const contestsRaw = await fetchWithTimeout(ndk, { kinds: [33401], '#t': ['bikel'] }, 15000);
+        const contestsRaw = await fetchWithTimeout(ndk, { kinds: [33401] }, 20000);
+        console.log(`[Bot] Found ${contestsRaw.size} raw kind-33401 events on relays.`);
 
         const finishedContests = Array.from(contestsRaw).filter(c => {
             const end = parseInt(c.getMatchingTags('end')[0]?.[1] || '0', 10);
-            return end < now && end > yesterday;
-        });
+            const title = c.getMatchingTags('title')[0]?.[1] || '(no title)';
+            const hasBikelTag = c.getMatchingTags('t').some(t => t[1] === 'bikel' || t[1] === 'bikel-challenge');
 
-        if (finishedContests.length === 0) {
-            console.log('[Bot] No finished challenges in the last 24 hours.');
-            return;
-        }
+            if (!hasBikelTag) {
+                // Not a bikel challenge, ignore silently or with debug
+                return false;
+            }
+
+            // Must have ended more than GRACE_PERIOD ago, but less than cutoff ago
+            const isGracePeriod = end >= (now - GRACE_PERIOD);
+            const isTooOld = end <= cutoff;
+            const isFinished = end < now;
+
+            if (isFinished && !isGracePeriod && !isTooOld) {
+                return true;
+            } else {
+                if (isGracePeriod) console.log(`[Bot]   - "${title}" (${c.id.substring(0, 8)}): Waiting for 1h grace period (ends ${new Date((end + GRACE_PERIOD) * 1000).toISOString()})`);
+                else if (isTooOld) console.log(`[Bot]   - "${title}" (${c.id.substring(0, 8)}): Too old to process (ended ${new Date(end * 1000).toISOString()})`);
+                // If not finished yet, we just ignore it here (it's "Upcoming" or "Active")
+                return false;
+            }
+        });
 
         console.log(`[Bot] Found ${finishedContests.length} finished challenge(s).`);
 
@@ -389,42 +413,62 @@ async function processFinishedContests() {
                 limit: 1000
             }, 10000);
 
-            const participantPubkeys = Array.from(rsvps).map(r => r.pubkey);
+            const participantPubkeys = Array.from(rsvps)
+                .filter(r => r.created_at <= endTimestamp)
+                .map(r => r.pubkey);
 
             if (participantPubkeys.length === 0) {
-                console.log('[Bot] No participants — skipping.');
+                console.log(`[Bot] No participants found for contest "${contestName}" — skipping.`);
                 continue;
             }
+
+            console.log(`[Bot] Found ${participantPubkeys.length} participants for "${contestName}": ${participantPubkeys.map(p => p.substring(0, 8)).join(', ')}`);
 
             // ── Rides ─────────────────────────────────────
             const rides = await fetchWithTimeout(ndk, {
                 kinds: [33301],
                 authors: participantPubkeys,
                 since: startTimestamp,
-                until: endTimestamp,
+                // We remove 'until' here to catch rides published after the endTimestamp 
+                // but that happened during the window (checked by created_at).
+                // Since the bot now runs with a GRACE_PERIOD, this is safer.
                 limit: 5000
-            }, 15000);
+            }, 30000); // Increased to 30s for relay lag
 
             console.log(`[Bot] ${rides.size} ride(s) from ${participantPubkeys.length} participant(s).`);
 
             // ── Leaderboard ───────────────────────────────
             const leaderboard = new Map();
+            const suffix = parameter.includes('distance') ? 'mi'
+                : parameter === 'fastest_mile' ? 'mph'
+                    : 'pts';
 
             for (const ride of rides) {
                 const confidence = parseFloat(ride.getMatchingTags('confidence')[0]?.[1] || '0');
+                const pubkey = ride.pubkey;
 
                 // Use min_confidence from the challenge event, not a hardcoded value
-                if (confidence < minConfidence) continue;
+                if (confidence < minConfidence) {
+                    console.log(`[Bot]   - Ride ${ride.id.substring(0, 8)} by ${pubkey.substring(0, 8)} rejected: low confidence (${confidence} < ${minConfidence})`);
+                    continue;
+                }
 
                 const distance = parseFloat(ride.getMatchingTags('distance')[0]?.[1] || '0');
                 const duration = parseInt(ride.getMatchingTags('duration')[0]?.[1] || '0', 10);
-                const pubkey = ride.pubkey;
 
                 if (parameter === 'max_distance' || parameter === 'max_elevation') {
                     leaderboard.set(pubkey, (leaderboard.get(pubkey) || 0) + distance);
+                    console.log(`[Bot]   - Ride ${ride.id.substring(0, 8)} by ${pubkey.substring(0, 8)} accepted: ${distance.toFixed(2)} ${suffix}`);
                 } else if (parameter === 'fastest_mile' && distance >= 1) {
                     const pace = distance / (duration / 3600);
-                    if (pace > (leaderboard.get(pubkey) || 0)) leaderboard.set(pubkey, pace);
+                    if (pace > (leaderboard.get(pubkey) || 0)) {
+                        leaderboard.set(pubkey, pace);
+                        console.log(`[Bot]   - Ride ${ride.id.substring(0, 8)} by ${pubkey.substring(0, 8)} accepted: ${pace.toFixed(2)} mph`);
+                    } else {
+                        console.log(`[Bot]   - Ride ${ride.id.substring(0, 8)} by ${pubkey.substring(0, 8)} skipped: slower than existing pace (${pace.toFixed(2)} mph)`);
+                    }
+                } else if (parameter === 'fastest_mile') {
+                    console.log(`[Bot]   - Ride ${ride.id.substring(0, 8)} by ${pubkey.substring(0, 8)} rejected: distance too short for fastest mile (${distance.toFixed(2)} mi)`);
                 }
             }
 
@@ -451,9 +495,6 @@ async function processFinishedContests() {
             }
 
             // ── Payouts ───────────────────────────────────
-            const suffix = parameter.includes('distance') ? 'mi'
-                : parameter === 'fastest_mile' ? 'mph'
-                    : 'pts';
             const nevent = nip19.neventEncode({ id: contest.id, relays: RELAYS });
             const noLud16Winners = [];
 
@@ -547,6 +588,11 @@ if (process.argv.includes('--run-now')) {
             process.exit(1);
         });
 } else {
-    console.log('[Bot] Scheduled cron — running every hour.');
-    cron.schedule('0 * * * *', processFinishedContests);
+    console.log(`[Bot] v${BOT_VERSION} starting (Scheduled Cron)...`);
+    cron.schedule('0 * * * *', () => {
+        console.log(`[Bot] v${BOT_VERSION} Cron Triggered: ${new Date().toISOString()}`);
+        processFinishedContests();
+    });
+    // Run once on startup
+    processFinishedContests();
 }

@@ -35,6 +35,9 @@ function fetchWithTimeout(filter, timeoutMs = 10000) {
 }
 
 async function run() {
+    const args = process.argv.slice(2);
+    const TARGET_CONTEST_ID = args.find(a => !a.startsWith('--'));
+
     try {
         await Promise.race([
             ndk.connect(),
@@ -44,6 +47,73 @@ async function run() {
         console.warn("[Query] Connect timed out, proceeding with available relays:", e.message);
     }
     console.log("Connected");
+
+    if (TARGET_CONTEST_ID) {
+        console.log(`\n--- Debugging Contest (ID or Prefix): ${TARGET_CONTEST_ID} ---`);
+
+        let contest;
+        if (TARGET_CONTEST_ID.length === 64) {
+            const contests = await fetchWithTimeout({ kinds: [33401], ids: [TARGET_CONTEST_ID] });
+            contest = Array.from(contests)[0];
+        } else {
+            console.log(`Searching for contests matching prefix "${TARGET_CONTEST_ID}"...`);
+            const contests = await fetchWithTimeout({ kinds: [33401] });
+            contest = Array.from(contests).find(c => c.id.startsWith(TARGET_CONTEST_ID));
+        }
+
+        if (!contest) {
+            console.log("❌ Contest not found.");
+            process.exit(1);
+        }
+
+        console.log(`Found Contest: ${contest.id}`);
+        const title = contest.getMatchingTags('title')[0]?.[1] ?? '(no title)';
+        const dTag = contest.getMatchingTags('d')[0]?.[1];
+        const start = parseInt(contest.getMatchingTags('start')[0]?.[1] || '0', 10);
+        const end = parseInt(contest.getMatchingTags('end')[0]?.[1] || '0', 10);
+        const minConf = parseFloat(contest.getMatchingTags('min_confidence')[0]?.[1] || '0.7');
+
+        console.log(`Title: ${title}`);
+        console.log(`Window: ${new Date(start * 1000).toISOString()} -> ${new Date(end * 1000).toISOString()}`);
+        console.log(`Min Confidence: ${minConf}`);
+
+        // RSVPs
+        const aTag = `33401:${contest.pubkey}:${dTag}`;
+        console.log(`Looking for RSVPs with a-tag: ${aTag}`);
+        const rsvps = await fetchWithTimeout({ kinds: [31925], '#a': [aTag] });
+        console.log(`Participants found: ${rsvps.size}`);
+
+        const participantPubkeys = Array.from(rsvps).map(r => r.pubkey);
+        for (const p of participantPubkeys) {
+            console.log(`  - Participant: ${p.substring(0, 8)}...`);
+        }
+
+        if (participantPubkeys.length > 0) {
+            console.log(`\nFetching rides for these participants...`);
+            const rides = await fetchWithTimeout({
+                kinds: [33301],
+                authors: participantPubkeys,
+                since: start - 86400, // Look a bit before just in case
+                until: end + 86400    // Look a bit after just in case
+            });
+            console.log(`Total rides found in expanded window: ${rides.size}`);
+
+            for (const ride of rides) {
+                const rStart = ride.created_at;
+                const dist = ride.getMatchingTags('distance')[0]?.[1] ?? '0';
+                const conf = parseFloat(ride.getMatchingTags('confidence')[0]?.[1] || '0');
+
+                const inWin = rStart >= start && rStart <= end;
+                const confOk = conf >= minConf;
+
+                console.log(`  Ride ${ride.id.substring(0, 8)} by ${ride.pubkey.substring(0, 8)}...`);
+                console.log(`    Created: ${new Date(rStart * 1000).toISOString()} (In window: ${inWin})`);
+                console.log(`    Distance: ${dist}, Confidence: ${conf} (Conf OK: ${confOk})`);
+                console.log(`    STATUS: ${inWin && confOk ? '✅ ELIGIBLE' : '❌ REJECTED'}`);
+            }
+        }
+        process.exit(0);
+    }
 
     // Kind 33401 — Bikel custom challenge kind
     console.log("\n--- Querying kind 33401 (Bikel Challenges) ---");
@@ -57,7 +127,6 @@ async function run() {
         const minConfidence = e.getMatchingTags('min_confidence')[0]?.[1] ?? '0.7';
         const payout = e.getMatchingTags('payout')[0]?.slice(1).join('/') ?? '50/30/20';
         console.log(`  id=${e.id.substring(0, 12)}... title="${title}" end=${end} fee=${fee} min_confidence=${minConfidence} payout=${payout} d=${dTag}`);
-        console.log(`  tags:`, e.tags);
     }
 
     // Kind 33301 — ride events (unchanged, correct)
@@ -81,32 +150,6 @@ async function run() {
         const duration = e.getMatchingTags('duration')[0]?.[1] ?? '(missing)';
         const date = new Date(e.created_at * 1000).toISOString();
         console.log(`  id=${e.id.substring(0, 12)}... created=${date} distance=${distance} confidence=${confidence} duration=${duration}`);
-    }
-
-    // Challenge window checker — paste a challenge's start/end/min_confidence to debug eligibility.
-    // MIN_CONFIDENCE should match the 'min_confidence' tag on the challenge event (default: 0.7).
-    console.log("\n--- Challenge Window Check ---");
-    const CHALLENGE_START = 1772746248; // update to match your active challenge
-    const CHALLENGE_END = 1772919048;   // update to match your active challenge
-    const MIN_CONFIDENCE = 0.7;         // update to match the challenge's min_confidence tag
-    console.log(`Window: ${new Date(CHALLENGE_START * 1000).toISOString()} → ${new Date(CHALLENGE_END * 1000).toISOString()}`);
-    console.log(`Min confidence: ${MIN_CONFIDENCE}`);
-    let eligible = 0;
-    for (const e of myRides) {
-        const inWindow = e.created_at >= CHALLENGE_START && e.created_at <= CHALLENGE_END;
-        const confidence = parseFloat(e.getMatchingTags('confidence')[0]?.[1] ?? '0');
-        const passing = inWindow && confidence >= MIN_CONFIDENCE;
-        console.log(`  id=${e.id.substring(0, 12)}... inWindow=${inWindow} confidence=${confidence} ✅eligible=${passing}`);
-        if (passing) eligible++;
-    }
-    console.log(`${eligible} ride(s) would score in this challenge.`);
-
-    console.log("\n--- Querying kind 31925 (Challenge RSVPs) ---");
-    const rsvpEvents = await fetchWithTimeout({ kinds: [31925], limit: 20 });
-    console.log("31925 RSVP events found:", rsvpEvents.size);
-    for (const e of rsvpEvents) {
-        const aTag = e.getMatchingTags('a')[0]?.[1] ?? '(no a tag)';
-        console.log(`  pubkey=${e.pubkey.substring(0, 8)}... a="${aTag}"`);
     }
 
     process.exit(0);

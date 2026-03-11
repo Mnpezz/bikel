@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { StyleSheet, Text, View, TouchableOpacity, Dimensions, Platform, ScrollView, TextInput, Alert, KeyboardAvoidingView, ActivityIndicator, Image, RefreshControl, BackHandler, AppState } from 'react-native';
 import * as Location from 'expo-location';
 import { LeafletView, MapLayerType, MapShapeType, WebViewLeafletEvents } from 'react-native-leaflet-view';
@@ -436,7 +436,11 @@ export default function App() {
   };
 
   // ── Sync auto-detect task with UI & storage ──────────
+  const isSyncingRef = useRef(false);
+  const pollerRef = useRef<NodeJS.Timeout | null>(null);
   const syncAutoDetectState = async (forceRestart = false) => {
+    if (isSyncingRef.current) return;
+    isSyncingRef.current = true;
     try {
       const saved = await AsyncStorage.getItem('bikel_auto_detect');
       const isEnabled = saved === 'true';
@@ -482,7 +486,9 @@ export default function App() {
         }
         setAutoDetect(false);
       }
-    } catch (e) { console.error('[Sync] Failed:', e); }
+    } catch (e) { console.error('[Sync] Failed:', e); } finally {
+      isSyncingRef.current = false;
+    }
   };
 
   // ── Toggle auto-detect on/off ──────────────────────
@@ -542,11 +548,13 @@ export default function App() {
       }).catch(() => { /* non-fatal, last known is fine */ });
     })();
 
-    // Poll for new drafts every 60s (in case one was saved in background)
-    const draftPoller = setInterval(() => {
-      loadDrafts();
-      logEvent("🔄 Periodic draft sync");
-    }, 60000);
+    // Poll for new drafts every 60s
+    if (!pollerRef.current) {
+      pollerRef.current = setInterval(() => {
+        loadDrafts();
+        logEvent("🔄 Periodic draft sync");
+      }, 60000);
+    }
 
     // Listen for AppState changes (to re-sync when coming back from background/settings)
     const appStateListener = AppState.addEventListener('change', async (nextAppState) => {
@@ -558,7 +566,10 @@ export default function App() {
 
     return () => {
       mounted = false;
-      clearInterval(draftPoller);
+      if (pollerRef.current) {
+        clearInterval(pollerRef.current);
+        pollerRef.current = null;
+      }
       appStateListener.remove();
     };
   }, []);
