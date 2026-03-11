@@ -501,7 +501,7 @@ export async function fetchScheduledRides(): Promise<ScheduledRideEvent[]> {
                     description: event.content || "", startTime, locationStr,
                     createdAt: event.created_at || Math.floor(Date.now() / 1000), attendees: [],
                     route: parsedRoute,
-                    timezone: event.getMatchingTags("start_tz")[0]?.[1],
+                    timezone: event.getMatchingTags("start_tzid")[0]?.[1] || event.getMatchingTags("start_tz")[0]?.[1],
                     image: event.getMatchingTags("image")[0]?.[1],
                     distance: event.getMatchingTags("distance")[0]?.[1],
                     duration: event.getMatchingTags("duration")[0]?.[1],
@@ -557,7 +557,7 @@ export async function publishScheduledRide(
         const h = Math.floor(duration / 3600); const m = Math.floor((duration % 3600) / 60); const s = duration % 60;
         event.tags.push(['duration', h > 0 ? `${h}h ${m}m` : `${m}m ${s}s`]);
     }
-    try { const tz = Intl.DateTimeFormat().resolvedOptions().timeZone; if (tz) event.tags.push(['start_tz', tz]); } catch (e) { }
+    try { const tz = Intl.DateTimeFormat().resolvedOptions().timeZone; if (tz) { event.tags.push(['start_tzid', tz]); event.tags.push(['start_tz', tz]); } } catch (e) { }
     if (routePoints && routePoints.length > 0) {
         const compressedGeo = routePoints.map(p => [Number(p.lat.toFixed(6)), Number(p.lng.toFixed(6))]);
         event.tags.push(['route', JSON.stringify(compressedGeo)]);

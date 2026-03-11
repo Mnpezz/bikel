@@ -338,7 +338,7 @@ export async function fetchScheduledRides(): Promise<ScheduledRideEvent[]> {
                 if (routeTag) {
                     try { parsedRoute = JSON.parse(routeTag); } catch (e) { }
                 }
-                const tzTag = event.getMatchingTags("start_tz")[0]?.[1];
+                const tzTag = event.getMatchingTags("start_tzid")[0]?.[1] || event.getMatchingTags("start_tz")[0]?.[1];
                 const imageTag = event.getMatchingTags("image")[0]?.[1];
                 const distanceTag = event.getMatchingTags("distance")[0]?.[1];
                 const durationTag = event.getMatchingTags("duration")[0]?.[1];
@@ -468,14 +468,45 @@ export async function publishComment(eventId: string, content: string): Promise<
     ];
 
     console.log('[Nostr] Signing and publishing Comment event...');
-    try {
-        await event.publish();
-        console.log(`[Nostr] Comment published! ID: ${event.id}`);
-        return true;
-    } catch (e) {
-        console.error("[Nostr] Failed to publish comment", e);
-        return false;
+    try { await event.publish(); return true; } catch (e) { console.error("[Nostr] Failed to publish comment", e); return false; }
+}
+
+export async function publishScheduledRide(
+    name: string, description: string, startTimestamp: number, locationStr: string,
+    routePoints?: { lat: number; lng: number }[], imageUrl?: string, distance?: number, duration?: number
+): Promise<string> {
+    const ndk = await connectNDK();
+    const event = new NDKEvent(ndk);
+    event.kind = 31923;
+    const dTag = `bikel-ride-${Date.now()}`;
+    event.tags = [
+        ['d', dTag], ['name', name], ['title', name],
+        ['start', startTimestamp.toString()], ['location', locationStr],
+        ['t', 'cycling'], ['t', 'bikel'], ['client', 'bikel'],
+    ];
+    if (imageUrl) event.tags.push(['image', imageUrl]);
+    if (distance !== undefined) event.tags.push(['distance', distance.toString()]);
+    if (duration !== undefined) {
+        const h = Math.floor(duration / 3600); const m = Math.floor((duration % 3600) / 60); const s = duration % 60;
+        event.tags.push(['duration', h > 0 ? `${h}h ${m}m` : `${m}m ${s}s`]);
     }
+    try {
+        const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+        if (tz) {
+            event.tags.push(['start_tzid', tz]);
+            event.tags.push(['start_tz', tz]); // fallback for older clients
+        }
+    } catch (e) { }
+
+    if (routePoints && routePoints.length > 0) {
+        const compressedGeo = routePoints.map(p => [Number(p.lat.toFixed(6)), Number(p.lng.toFixed(6))]);
+        event.tags.push(['route', JSON.stringify(compressedGeo)]);
+    }
+    event.content = description;
+    console.log('[Nostr] Publishing scheduled ride event...');
+    await event.publish();
+    console.log(`[Nostr] Scheduled ride published! ID: ${event.id}`);
+    return event.id;
 }
 
 export interface DMessage {
