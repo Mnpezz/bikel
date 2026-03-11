@@ -43,8 +43,8 @@ let lastLogTime = 0;
 async function logEvent(msg: string) {
   try {
     const now = Date.now();
-    // Simple deduplication (ignore identical messages within 500ms)
-    if (msg === lastLogMsg && (now - lastLogTime) < 500) return;
+    // Simple deduplication (ignore identical messages within 1000ms)
+    if (msg === lastLogMsg && (now - lastLogTime) < 1000) return;
     lastLogMsg = msg;
     lastLogTime = now;
 
@@ -436,7 +436,7 @@ export default function App() {
   };
 
   // ── Sync auto-detect task with UI & storage ──────────
-  const syncAutoDetectState = async () => {
+  const syncAutoDetectState = async (forceRestart = false) => {
     try {
       const saved = await AsyncStorage.getItem('bikel_auto_detect');
       const isEnabled = saved === 'true';
@@ -445,8 +445,12 @@ export default function App() {
 
       if (isEnabled) {
         if (bgPerm.status === 'granted') {
-          if (!isRunning) {
-            // Restart task if it should be running but isn't
+          if (!isRunning || forceRestart) {
+            if (isRunning && forceRestart) {
+              await logEvent("🛑 Auto-detect cleanup (lingering task)");
+              await Location.stopLocationUpdatesAsync(DRAFT_TASK);
+            }
+            // Restart task if it should be running but isn't, or if we're forcing a refresh
             await logEvent("🔄 Auto-detect restart (missing task)");
             await Location.startLocationUpdatesAsync(DRAFT_TASK, {
               accuracy: Location.Accuracy.High,
@@ -517,8 +521,8 @@ export default function App() {
         console.error("Failed to fetch public key hex on mount:", e);
       }
 
-      // Re-sync auto-detect task and UI state
-      await syncAutoDetectState();
+      // Re-sync auto-detect task and UI state (forcing restart to ensure banner shows)
+      await syncAutoDetectState(true);
 
       // Load drafts
       await loadDrafts();
@@ -585,6 +589,7 @@ export default function App() {
       if (selectedDraft) { setSelectedDraft(null); return true; }
 
       // Settings / History / Schedule / Feed (Top-level views)
+      if (showLogs) { setShowLogs(false); return true; }
       if (showSettings) { setShowSettings(false); return true; }
       if (showHistory) { setShowHistory(false); return true; }
       if (showSchedule) { setShowSchedule(false); return true; }
