@@ -911,7 +911,7 @@ export async function uploadPhoto(uri: string): Promise<string> {
             console.log(`[Bikel-Photo-v13] Trying ${server}...`);
             const baseUrl = server.replace(/\/$/, '');
             const putHashUrl = `${baseUrl}/${hash}`;
-            
+
             // 5. Create Blossom Auth Event (MUST be signed per URL for NIP-98 compliance)
             const authEvent = new NDKEvent(ndk);
             authEvent.kind = 24242; // Blossom Blob Auth
@@ -948,7 +948,7 @@ export async function uploadPhoto(uri: string): Promise<string> {
             if (response.status < 200 || response.status >= 300) {
                 const xReason = response.headers.get('x-reason') || 'No reason given';
                 console.log(`[Bikel-Photo-v13] PUT /${hash} at ${server} failed (${response.status}): ${xReason}. Trying /upload...`);
-                
+
                 const uploadUrl = `${baseUrl}/upload`;
                 // Re-sign for new URL
                 const authEventUpload = new NDKEvent(ndk);
@@ -981,7 +981,7 @@ export async function uploadPhoto(uri: string): Promise<string> {
                     const data = await response.json();
                     if (data.url) return data.url;
                 } catch (e) { }
-                
+
                 // Fallback: standard Blossom URL is server/hash
                 return `${baseUrl}/${hash}`;
             } else {
@@ -997,9 +997,9 @@ export async function uploadPhoto(uri: string): Promise<string> {
         }
     }
 
-    const finalError = failures.length > 0 
+    const finalError = failures.length > 0
         ? `Upload failed. Rejection reasons:\n${failures.slice(0, 3).join('\n')}`
         : 'All Blossom servers failed even with Fetch upload. Check your connection.';
-    
+
     throw new Error(finalError);
 }

@@ -98,6 +98,7 @@ function App() {
   const [comments, setComments] = useState<RideComment[]>([]);
   const [newComment, setNewComment] = useState('');
   const [isPublishingComment, setIsPublishingComment] = useState(false);
+  const [mapFocus, setMapFocus] = useState<[number, number] | null>(null);
   const [isDiscussionExpanded, setIsDiscussionExpanded] = useState(false);
 
   const [activeDMUser, setActiveDMUser] = useState<string | null>(null);
@@ -423,7 +424,13 @@ function App() {
                 </h3>
                 {corridors.slice(0, 8).map((c, i) => (
                   <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-                    <div style={{ fontSize: '11px', color: '#9ba1a6', fontFamily: 'monospace' }}>{c.lat1.toFixed(4)},{c.lng1.toFixed(4)}</div>
+                    <div 
+                      style={{ fontSize: '11px', color: '#9ba1a6', fontFamily: 'monospace', cursor: 'pointer', borderBottom: '1px dashed rgba(155, 161, 166, 0.4)' }}
+                      onClick={() => setMapFocus([c.lat1, c.lng1])}
+                      title="Click to focus map"
+                    >
+                      {c.lat1.toFixed(4)},{c.lng1.toFixed(4)}
+                    </div>
                     <div style={{ background: 'rgba(234,179,8,0.15)', border: '1px solid rgba(234,179,8,0.3)', borderRadius: '10px', padding: '2px 8px', fontSize: '11px', color: '#eab308', fontWeight: 'bold' }}>{c.count}×</div>
                   </div>
                 ))}
@@ -620,6 +627,7 @@ function App() {
                 <Popup><div style={{ color: '#000', fontSize: '12px' }}><strong>{cell.count} passes</strong><br />{cell.riders.size} unique rider{cell.riders.size !== 1 ? 's' : ''}</div></Popup>
               </CircleMarker>
             ))}
+            <MapFocusHandler focus={mapFocus} />
           </MapContainer>
         </section>
       </main>
@@ -939,6 +947,16 @@ function SetMapBounds({ route }: { route: number[][] }) {
       map.fitBounds(bounds, { padding: [20, 20] });
     }
   }, [route, map]);
+  return null;
+}
+
+function MapFocusHandler({ focus }: { focus: [number, number] | null }) {
+  const map = useMap();
+  useEffect(() => {
+    if (focus) {
+      map.flyTo(focus, 16, { duration: 1.5 });
+    }
+  }, [focus, map]);
   return null;
 }
 
