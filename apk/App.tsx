@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { StyleSheet, Text, View, TouchableOpacity, Dimensions, Platform, ScrollView, TextInput, Alert, KeyboardAvoidingView, ActivityIndicator, Image, RefreshControl, BackHandler, AppState } from 'react-native';
 import * as Location from 'expo-location';
 import { LeafletView, MapLayerType, MapShapeType, WebViewLeafletEvents } from 'react-native-leaflet-view';
-import { Bike, Square, Play, Zap, History, Settings, CalendarPlus, X, MessageSquare, Globe, LocateFixed, Map, Mail, Trash2, RotateCw } from 'lucide-react-native';
+import { Bike, Square, Play, Zap, History, Settings, CalendarPlus, X, MessageSquare, Globe, LocateFixed, Map, Mail, Trash2, RotateCw, ChevronUp } from 'lucide-react-native';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import * as Clipboard from 'expo-clipboard';
 import * as ImagePicker from 'expo-image-picker';
@@ -31,7 +31,8 @@ export interface RideDraft {
   endTime: number;
   distance: number;
   durationSeconds: number;
-  route: { lat: number; lng: number }[];
+  elevationGain: number; // in feet
+  route: { lat: number; lng: number; alt?: number }[];
   confidence: number; // 0.0–1.0
   speedSpikes: number; // count of >30mph readings
 }
@@ -94,8 +95,10 @@ TaskManager.defineTask(DRAFT_TASK, async ({ data, error }: any) => {
   if (error) { console.error('[DraftTask] Error:', error.message); return; }
   if (!data) return;
 
+  // await logEvent("📍 DraftTask entry"); // Low-level heartbeat if needed
+
   try {
-    // Guard: skip if auto-detect disabled or manual tracking active
+    // logEvent("📍 DraftTask firing..."); // Too noisy for production, but good to know it works
     const autoDetect = await AsyncStorage.getItem('bikel_auto_detect');
     if (autoDetect !== 'true') return;
     const manualTracking = await AsyncStorage.getItem('bikel_manual_tracking');
@@ -144,6 +147,7 @@ TaskManager.defineTask(DRAFT_TASK, async ({ data, error }: any) => {
         state.route.push({
           lat: loc.coords.latitude,
           lng: loc.coords.longitude,
+          alt: loc.coords.altitude ?? undefined,
           time: now,
           speed: speedMph,
         });
@@ -214,8 +218,9 @@ TaskManager.defineTask(DRAFT_TASK, async ({ data, error }: any) => {
     }
 
     await AsyncStorage.setItem('bikel_draft_state', JSON.stringify(state));
-  } catch (e) {
+  } catch (e: any) {
     console.error('[DraftTask] Failed:', e);
+    await logEvent(`⚠️ DraftTask Error: ${e.message || String(e)}`);
   }
 });
 
@@ -241,11 +246,21 @@ function distToSegment(px: number, py: number, x1: number, y1: number, x2: numbe
 // Helper: finalize and save a draft to AsyncStorage + send notification
 async function finalizeDraft(startTimeMs: number, rawRoute: any[], spikes: number) {
   try {
-    // Calculate distance
+    // Calculate distance and elevation gain
     let totalDist = 0;
+    let totalElevationGainM = 0;
     for (let i = 1; i < rawRoute.length; i++) {
       totalDist += distanceMiles(rawRoute[i - 1].lat, rawRoute[i - 1].lng, rawRoute[i].lat, rawRoute[i].lng);
+
+      const alt1 = rawRoute[i - 1].alt;
+      const alt2 = rawRoute[i].alt;
+      if (alt1 !== undefined && alt2 !== undefined && alt2 > alt1) {
+        totalElevationGainM += (alt2 - alt1);
+      }
     }
+
+    const elevationGainFt = Math.round(totalElevationGainM * 3.28084);
+
     if (totalDist < 0.1) {
       await logEvent(`📏 Draft too short (${totalDist.toFixed(2)}mi) — discarding`);
       return;
@@ -263,7 +278,8 @@ async function finalizeDraft(startTimeMs: number, rawRoute: any[], spikes: numbe
       endTime: Math.floor(endTimeMs / 1000),
       distance: totalDist,
       durationSeconds,
-      route: rawRoute.map((p: any) => ({ lat: p.lat, lng: p.lng })),
+      elevationGain: elevationGainFt,
+      route: rawRoute.map((p: any) => ({ lat: p.lat, lng: p.lng, alt: p.alt })),
       confidence,
       speedSpikes: spikes,
     };
@@ -322,6 +338,7 @@ export default function App() {
   const [isTracking, setIsTracking] = useState(false);
   const [duration, setDuration] = useState(0);
   const [distance, setDistance] = useState(0);
+  const [elevation, setElevation] = useState(0);
   const [route, setRoute] = useState<Location.LocationObject[]>([]);
   const [myRides, setMyRides] = useState<RideEvent[]>([]);
   const [globalRides, setGlobalRides] = useState<RideEvent[]>([]);
@@ -489,11 +506,11 @@ export default function App() {
         if (bgPerm.status === 'granted') {
           if (!isRunning || forceRestart) {
             if (isRunning && forceRestart) {
-              await logEvent("🛑 Auto-detect cleanup (lingering task)");
+              await logEvent("🛑 Auto-detect reset (manual toggle)");
               await Location.stopLocationUpdatesAsync(DRAFT_TASK);
             }
             // Restart task if it should be running but isn't, or if we're forcing a refresh
-            await logEvent("🔄 Auto-detect restart (missing task)");
+            if (!isRunning) await logEvent("🔄 Auto-detect starting...");
             await Location.startLocationUpdatesAsync(DRAFT_TASK, {
               accuracy: Location.Accuracy.High,
               distanceInterval: 10,
@@ -507,7 +524,8 @@ export default function App() {
               showsBackgroundLocationIndicator: false,
             });
           } else {
-            await logEvent("✅ Auto-detect: ACTIVE & verified");
+            // Already running and no force-restart needed
+            // logEvent("✅ Auto-detect: ACTIVE"); // Silent verify
           }
           setAutoDetect(true);
         } else {
@@ -1031,9 +1049,10 @@ export default function App() {
     setTrimTails(true);
     setDistance(draft.distance);
     setDuration(draft.durationSeconds);
+    setElevation(draft.elevationGain || 0);
     // Convert draft route to LocationObject-like for publishing
     const fakeRoute = draft.route.map(p => ({
-      coords: { latitude: p.lat, longitude: p.lng, altitude: null, accuracy: null, altitudeAccuracy: null, heading: null, speed: null },
+      coords: { latitude: p.lat, longitude: p.lng, altitude: p.alt || null, accuracy: null, altitudeAccuracy: null, heading: null, speed: null },
       timestamp: draft.startTime * 1000,
     })) as Location.LocationObject[];
     setRoute(fakeRoute);
@@ -1168,9 +1187,11 @@ export default function App() {
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
             <View style={{ flex: 1 }}>
               <Text style={{ color: '#00ffaa', fontWeight: 'bold', fontSize: 16 }} numberOfLines={1}>{selectedMapRide.title || 'Untitled Ride'}</Text>
-              <Text style={{ color: '#aaa', fontSize: 12, marginTop: 2 }}>
-                By {profiles[selectedMapRide.hexPubkey]?.nip05 || profiles[selectedMapRide.hexPubkey]?.name || selectedMapRide.pubkey.substring(0, 10) + '...'}
-              </Text>
+              <TouchableOpacity onPress={() => { setViewingAuthor(selectedMapRide.hexPubkey); setIsLoadingAuthor(true); fetchUserRides(selectedMapRide.hexPubkey).then(setAuthorRides).finally(() => setIsLoadingAuthor(false)); }}>
+                <Text style={{ color: '#aaa', fontSize: 12, marginTop: 2 }}>
+                  By <Text style={{ color: '#00ccff', textDecorationLine: 'underline' }}>{profiles[selectedMapRide.hexPubkey]?.nip05 || profiles[selectedMapRide.hexPubkey]?.name || selectedMapRide.pubkey.substring(0, 10) + '...'}</Text>
+                </Text>
+              </TouchableOpacity>
             </View>
             <TouchableOpacity onPress={() => setSelectedMapRide(null)} style={{ padding: 4 }}>
               <X size={20} color="#666" />
@@ -1435,9 +1456,11 @@ export default function App() {
                 const isDeletingThis = deletingRideId === r.id;
                 return (
                   <View key={r.id} style={[styles.historyCard, { borderColor: 'rgba(0,255,170,0.1)', borderWidth: 1 }]}>
-                    {r.image && (
-                      <Image source={{ uri: r.image }} style={{ width: '100%', height: 140, borderRadius: 8, marginBottom: 10 }} />
-                    )}
+                    {/* Preview Image */}
+                    <Image
+                      source={r.image ? { uri: r.image } : ((r.client?.toLowerCase() === 'runstr' || r.kind === 1301 || r.kind === 1) && r.client?.toLowerCase() !== 'bikel') ? require('./assets/runstrLogo.jpg') : require('./assets/bikelLogo.jpg')}
+                      style={{ width: '100%', height: 140, borderRadius: 8, marginBottom: 10 }}
+                    />
                     {/* Title + date row */}
                     <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 4 }}>
                       <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 15, flex: 1, marginRight: 8 }} numberOfLines={1}>
@@ -1464,6 +1487,12 @@ export default function App() {
                         <Text style={{ color: '#fff', fontSize: 16, fontWeight: 'bold' }}>{r.duration}</Text>
                         <Text style={{ color: '#9ba1a6', fontSize: 10, marginTop: 2 }}>TIME</Text>
                       </View>
+                      {r.elevation && (
+                        <View style={{ flex: 1, backgroundColor: 'rgba(255,255,255,0.04)', padding: 10, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.06)' }}>
+                          <Text style={{ color: '#fff', fontSize: 16, fontWeight: 'bold' }}>{r.elevation}</Text>
+                          <Text style={{ color: '#9ba1a6', fontSize: 10, marginTop: 2 }}>GAIN (FT)</Text>
+                        </View>
+                      )}
                       {distNum > 0 && r.duration && (() => {
                         const parts = r.duration.match(/(\d+)h\s*(\d+)m|(\d+)m/);
                         let totalMins = 0;
@@ -1790,7 +1819,9 @@ export default function App() {
                               <Image source={r.image ? { uri: r.image } : require('./assets/bikelLogo.jpg')} style={{ width: '100%', height: 150, borderRadius: 8, marginBottom: 12 }} />
                               <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
                                 <Text style={{ color: '#00ffaa', fontWeight: 'bold' }}>{r.name}</Text>
-                                <Text style={{ color: '#888', fontSize: 12 }}>{displayName}</Text>
+                                <TouchableOpacity onPress={() => { setViewingAuthor(r.hexPubkey); setIsLoadingAuthor(true); fetchUserRides(r.hexPubkey).then(setAuthorRides).finally(() => setIsLoadingAuthor(false)); }}>
+                                  <Text style={{ color: '#00ccff', fontSize: 12, textDecorationLine: 'underline' }}>{displayName}</Text>
+                                </TouchableOpacity>
                               </View>
                               <Text style={{ color: '#aaa', fontSize: 12, marginBottom: 8 }}>{new Date(r.startTime * 1000).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}{r.timezone ? ` (${r.timezone})` : ""}</Text>
                               <Text style={{ color: '#fff', fontSize: 13, marginBottom: 8 }}>{r.description}</Text>
@@ -1953,15 +1984,32 @@ export default function App() {
                     const displayName = profile?.nip05 || profile?.name || r.pubkey.substring(0, 10) + '...';
                     return (
                       <View key={r.id} style={[styles.historyCard, { borderColor: 'rgba(255,255,255,0.05)' }]}>
-                        <Image source={r.image ? { uri: r.image } : require('./assets/bikelLogo.jpg')} style={{ width: '100%', height: 150, borderRadius: 8, marginBottom: 12 }} />
-                        <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-                          <Text style={{ color: '#888', fontSize: 12 }}>{displayName}</Text>
+                        <Image source={r.image ? { uri: r.image } : ((r.client?.toLowerCase() === 'runstr' || r.kind === 1301 || r.kind === 1) && r.client?.toLowerCase() !== 'bikel') ? require('./assets/runstrLogo.jpg') : require('./assets/bikelLogo.jpg')} style={{ width: '100%', height: 150, borderRadius: 8, marginBottom: 12 }} />
+                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                          <View>
+                            <TouchableOpacity onPress={() => { setViewingAuthor(r.hexPubkey); setIsLoadingAuthor(true); fetchUserRides(r.hexPubkey).then(setAuthorRides).finally(() => setIsLoadingAuthor(false)); }}>
+                              <Text style={{ color: '#00ccff', fontSize: 12, textDecorationLine: 'underline' }}>{displayName}</Text>
+                            </TouchableOpacity>
+                            {r.client && r.client !== 'bikel' && (
+                              <Text style={{ color: '#00ccff', fontSize: 10, fontWeight: 'bold' }}>via {r.client.toLowerCase()}</Text>
+                            )}
+                          </View>
                           <Text style={styles.historyTime}>{r.title || new Date(r.time * 1000).toLocaleDateString()}</Text>
                         </View>
                         {r.description ? <Text style={{ color: '#ccc', fontSize: 13, marginBottom: 12 }}>{r.description}</Text> : null}
                         <View style={[styles.historyStats, { justifyContent: 'flex-start', gap: 16 }]}>
-                          <Text style={styles.historyStat}>{r.distance} mi</Text>
-                          <Text style={styles.historyStat}>{r.duration}</Text>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                            <Text style={styles.historyStat}>{r.distance} mi</Text>
+                          </View>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                            <Text style={styles.historyStat}>{r.duration}</Text>
+                          </View>
+                          {r.elevation && (
+                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                              <ChevronUp size={14} color="#00ffaa" />
+                              <Text style={styles.historyStat}>{r.elevation} ft</Text>
+                            </View>
+                          )}
                           {isNWCConnected && (
                             <TouchableOpacity disabled={isZapping} style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginLeft: 'auto', backgroundColor: 'rgba(234,179,8,0.1)', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12, borderWidth: 1, borderColor: 'rgba(234,179,8,0.3)' }} onPress={() => {
                               Alert.alert('Send Zap', `Zap ${displayName} 21 sats?`, [
@@ -2400,10 +2448,10 @@ export default function App() {
                       if (!postRideLocation) { Alert.alert("Missing Fields", "Please specify a meeting location."); return; }
                       const startUnix = Math.floor(new Date(postRideDate.getFullYear(), postRideDate.getMonth(), postRideDate.getDate(), postRideTime.getHours(), postRideTime.getMinutes()).getTime() / 1000);
                       await publishScheduledRide(postRideTitle || "Group Ride", postRideDesc || "Join my ride!", startUnix, postRideLocation, routePoints, postRideImageUrl, distance, duration);
-                      await publishRide(distance, duration, routePoints, postRidePrivacy, postRideTitle, postRideDesc, postRideImageUrl, confidenceToPost);
+                      await publishRide(distance, duration, routePoints, postRidePrivacy, postRideTitle, postRideDesc, postRideImageUrl, confidenceToPost, elevation);
                       Alert.alert("Ride Scheduled!", "Your group ride was published.");
                     } else {
-                      await publishRide(distance, duration, routePoints, postRidePrivacy, postRideTitle, postRideDesc, postRideImageUrl, confidenceToPost);
+                      await publishRide(distance, duration, routePoints, postRidePrivacy, postRideTitle, postRideDesc, postRideImageUrl, confidenceToPost, elevation);
                       Alert.alert("Ride Published!", "Your ride was published to Nostr.");
                     }
 
@@ -2413,7 +2461,7 @@ export default function App() {
                     }
 
                     setShowPostRideModal(false); setPostingFromDraft(null);
-                    setDuration(0); setDistance(0); setRoute([]);
+                    setDuration(0); setDistance(0); setElevation(0); setRoute([]);
                     setPostRideTitle(''); setPostRideDesc(''); setPostRideImageUrl('');
                     setPostRidePrivacy('full'); setPostRideScheduleMode(false);
                     try { setMyRides(await fetchMyRides()); setGlobalRides(await fetchRecentRides()); } catch (e) { }

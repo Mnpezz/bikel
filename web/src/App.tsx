@@ -285,13 +285,14 @@ function App() {
         date.toISOString(),
         r.distance || '0',
         r.duration || '0',
+        r.elevation || '0',
         r.route.length.toString(),
         (r.hexPubkey || r.pubkey).substring(0, 16),
         date.getHours().toString(),
         date.toLocaleDateString('en-US', { weekday: 'long' }),
       ];
     });
-    downloadCSV('bikel_ride_stats.csv', rows, ['timestamp', 'distance_mi', 'duration', 'gps_points', 'rider_id_anon', 'hour_of_day', 'day_of_week']);
+    downloadCSV('bikel_ride_stats.csv', rows, ['timestamp', 'distance_mi', 'duration', 'elevation_ft', 'gps_points', 'rider_id_anon', 'hour_of_day', 'day_of_week']);
   };
 
   const maxHeat = useMemo(() => Math.max(...heatmapCells.map(c => c.count), 1), [heatmapCells]);
@@ -532,7 +533,7 @@ function App() {
                                 {event.route && event.route.length > 0 && <button className="btn btn-surface" style={{ padding: '2px 8px', fontSize: '11px', background: 'rgba(0,255,170,0.1)', color: '#00ffaa' }} onClick={(e) => { e.stopPropagation(); setSelectedRide({ id: event.id, pubkey: event.pubkey, hexPubkey: event.hexPubkey, time: event.startTime, distance: event.distance || 'GPS Route', duration: event.duration || 'Scheduled', visibility: 'full', route: event.route!, kind: 33301, image: event.image }); }}>🗺️ Map</button>}
                               </div>
                               <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-                                {isNWCConnected && <button onClick={async (e) => { e.stopPropagation(); if (zappingEventId) return; setZappingEventId(event.id); try { await zapRideEvent(event.id, event.hexPubkey, event.kind, 21, "Thanks for organizing this ride!"); alert("Successfully sent 21 sats!"); } catch (e: any) { alert("Zap failed: " + (e.message || "Unknown error")); } setZappingEventId(null); }} style={{ background: 'none', border: 'none', color: '#eab308', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px', fontSize: '12px' }}><Zap size={14} fill={zappingEventId === event.id ? "#eab308" : "none"} /> 21</button>}
+                                {isNWCConnected && <button onClick={async (e) => { e.stopPropagation(); if (zappingEventId) return; if (!window.confirm(`Zap organizer 21 sats?`)) return; setZappingEventId(event.id); try { await zapRideEvent(event.id, event.hexPubkey, event.kind, 21, "Thanks for organizing this ride!"); alert("Successfully sent 21 sats!"); } catch (e: any) { alert("Zap failed: " + (e.message || "Unknown error")); } setZappingEventId(null); }} style={{ background: 'none', border: 'none', color: '#eab308', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px', fontSize: '12px' }}><Zap size={14} fill={zappingEventId === event.id ? "#eab308" : "none"} /> 21</button>}
                                 <button className="btn btn-primary" style={{ padding: '6px 12px', fontSize: '13px', background: '#00ccff', color: '#000', fontWeight: 'bold' }} onClick={() => setActiveDMUser(event.pubkey)}>Message Organizer</button>
                               </div>
                             </div>
@@ -569,11 +570,16 @@ function App() {
 
                   {viewMode !== 'scheduled' && (viewMode === 'personal' ? myRides : viewMode === 'author' ? authorRides : filteredGlobalRides).map((ride) => (
                     <div className="ride-card" key={ride.id} onClick={() => setSelectedRide(ride)}>
-                      <img src={ride.image || '/bikelLogo.jpg'} alt="Ride Map" style={{ width: '100%', height: '120px', objectFit: 'cover', borderRadius: '8px', marginBottom: '12px' }} />
+                      <img src={ride.image || ((ride.client?.toLowerCase() === 'runstr' || ride.kind === 1301 || ride.kind === 1) && ride.client?.toLowerCase() !== 'bikel' ? '/runstrLogo.jpg' : '/bikelLogo.jpg')} alt="Ride Map" style={{ width: '100%', height: '120px', objectFit: 'cover', borderRadius: '8px', marginBottom: '12px' }} />
                       <div className="ride-header">
                         <div className="ride-pubkey" title={ride.pubkey}>
                           <div className="avatar-mini"></div>
-                          <span onClick={(e) => { e.stopPropagation(); loadAuthorProfile(ride.pubkey); }} style={{ cursor: 'pointer' }}>{profiles[ride.hexPubkey || ride.pubkey]?.nip05 || profiles[ride.hexPubkey || ride.pubkey]?.name || `${ride.pubkey.substring(0, 10)}...`}</span>
+                          <div style={{ display: 'flex', flexDirection: 'column' }}>
+                            <span onClick={(e) => { e.stopPropagation(); loadAuthorProfile(ride.pubkey); }} style={{ cursor: 'pointer' }}>{profiles[ride.hexPubkey || ride.pubkey]?.nip05 || profiles[ride.hexPubkey || ride.pubkey]?.name || `${ride.pubkey.substring(0, 10)}...`}</span>
+                            {ride.client && ride.client !== 'bikel' && (
+                              <span style={{ color: '#00ccff', fontSize: '10px', fontWeight: 'bold' }}>via {ride.client}</span>
+                            )}
+                          </div>
                         </div>
                         <div className="ride-time">{formatDistanceToNow(ride.time * 1000, { addSuffix: true })}</div>
                       </div>
@@ -581,12 +587,13 @@ function App() {
                       <div className="ride-stats">
                         <div className="stat-item"><Route size={14} className="icon" /> {ride.distance} mi</div>
                         <div className="stat-item"><Clock size={14} className="icon" /> {ride.duration}</div>
+                        {ride.elevation && <div className="stat-item"><ChevronUp size={14} className="icon" /> {ride.elevation} ft</div>}
                         {ride.confidence !== undefined && (
                           <div className="stat-item" style={{ color: ride.confidence >= 0.7 ? '#00ffaa' : '#ff4d4f', fontSize: '11px' }}>
                             ●  {(ride.confidence * 100).toFixed(0)}%
                           </div>
                         )}
-                        {isNWCConnected && viewMode !== 'personal' && <button onClick={async (e) => { e.stopPropagation(); if (zappingEventId) return; setZappingEventId(ride.id); try { await zapRideEvent(ride.id, ride.hexPubkey, ride.kind, 21, "Great ride!"); alert("Successfully sent 21 sats!"); } catch (e: any) { alert("Zap failed: " + (e.message || "Unknown error")); } setZappingEventId(null); }} className="stat-item" style={{ background: 'rgba(234,179,8,0.1)', border: '1px solid rgba(234,179,8,0.3)', color: '#eab308', marginLeft: 'auto', borderRadius: '12px', padding: '2px 8px', cursor: 'pointer' }}><Zap size={12} fill={zappingEventId === ride.id ? "#eab308" : "none"} /> 21</button>}
+                        {isNWCConnected && viewMode !== 'personal' && <button onClick={async (e) => { e.stopPropagation(); if (zappingEventId) return; if (!window.confirm(`Zap rider 21 sats?`)) return; setZappingEventId(ride.id); try { await zapRideEvent(ride.id, ride.hexPubkey, ride.kind, 21, "Great ride!"); alert("Successfully sent 21 sats!"); } catch (e: any) { alert("Zap failed: " + (e.message || "Unknown error")); } setZappingEventId(null); }} className="stat-item" style={{ background: 'rgba(234,179,8,0.1)', border: '1px solid rgba(234,179,8,0.3)', color: '#eab308', marginLeft: 'auto', borderRadius: '12px', padding: '2px 8px', cursor: 'pointer' }}><Zap size={12} fill={zappingEventId === ride.id ? "#eab308" : "none"} /> 21</button>}
                         {viewMode === 'personal' && user && ride.hexPubkey === user.pubkey && (
                           <button
                             onClick={async (e) => { e.stopPropagation(); await handleDeleteRide(ride.id); }}
@@ -644,6 +651,9 @@ function App() {
                   <span style={{ color: '#00ffaa', cursor: 'pointer', marginLeft: '4px', textDecoration: 'underline' }} onClick={() => loadAuthorProfile(selectedRide.pubkey)}>
                     {profiles[selectedRide.hexPubkey || selectedRide.pubkey]?.nip05 || profiles[selectedRide.hexPubkey || selectedRide.pubkey]?.name || `${selectedRide.pubkey.substring(0, 16)}...`}
                   </span>
+                  {selectedRide.client && selectedRide.client !== 'bikel' && (
+                    <span style={{ color: '#00ccff', fontSize: '12px', fontWeight: 'bold', marginLeft: '8px' }}>via {selectedRide.client}</span>
+                  )}
                 </div>
               </div>
               <button onClick={() => setSelectedRide(null)} className="btn btn-surface" style={{ padding: '8px' }}><X size={24} /></button>
@@ -654,6 +664,7 @@ function App() {
             <div className="modal-stats" style={{ display: 'flex', padding: '20px', gap: '40px', background: 'rgba(0,0,0,0.3)' }}>
               <div className="stat-box"><div className="stat-value">{selectedRide.distance}</div><div className="stat-label">MILES</div></div>
               <div className="stat-box"><div className="stat-value">{selectedRide.duration}</div><div className="stat-label">TIME</div></div>
+              {selectedRide.elevation && <div className="stat-box"><div className="stat-value">{selectedRide.elevation}</div><div className="stat-label">ELEVATION (FT)</div></div>}
             </div>
             <div className="modal-map" style={{ flex: 1, position: 'relative' }}>
               {selectedRide.route.length > 0 ? (
@@ -931,7 +942,7 @@ function App() {
             </div>
           </div>
           <p style={{ textAlign: 'center', fontSize: '16px', marginBottom: '32px' }}>Download the official Android APK to passively record maps, upload photos, and broadcast rides securely to any Nostr relay!</p>
-          <a href="https://github.com/Mnpezz/bikel/releases/download/v1.3.0/app-release.apk" download className="btn btn-primary" style={{ width: '100%', padding: '16px', fontSize: '18px', justifyContent: 'center', background: '#00ffaa', color: '#000', fontWeight: '900', textTransform: 'uppercase', letterSpacing: '1px', boxShadow: '0 0 20px rgba(0,255,170,0.4)' }}>Download Android APK</a>
+          <a href="https://github.com/Mnpezz/bikel/releases/download/v1.3.1/app-release.apk" download className="btn btn-primary" style={{ width: '100%', padding: '16px', fontSize: '18px', justifyContent: 'center', background: '#00ffaa', color: '#000', fontWeight: '900', textTransform: 'uppercase', letterSpacing: '1px', boxShadow: '0 0 20px rgba(0,255,170,0.4)' }}>Download Android APK</a>
           <div style={{ marginTop: '24px', fontSize: '12px', color: 'rgba(255,255,255,0.4)', textAlign: 'center' }}>Requires Android 10.0 or higher.</div>
         </div>
       </div>

@@ -163,7 +163,8 @@ export async function publishRide(
     title: string = "",
     description: string = "",
     image: string = "",
-    overrideConfidence?: number
+    overrideConfidence?: number,
+    elevation?: number
 ) {
     const ndk = await connectNDK();
     const event = new NDKEvent(ndk);
@@ -182,21 +183,34 @@ export async function publishRide(
         ['client', 'bikel'],
         ['t', 'cycling'],
         ['t', 'bikel'],
-        ['t', 'bikeride']
+        ['t', 'bikeride'],
+        ['t', 'fitness']
     ];
+    if (elevation !== undefined) event.tags.push(['elevation', elevation.toString()]);
     if (title) event.tags.push(['title', title]);
     if (description) event.tags.push(['summary', description]);
     if (image) event.tags.push(['image', image]);
+
+    const mins = Math.floor(durationSeconds / 60);
+    const secs = durationSeconds % 60;
+    const durationStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
 
     if (visibility === 'full' && routePoints.length > 0) {
         const step = Math.ceil(routePoints.length / 1000);
         const compressedGeo = routePoints
             .filter((_, index) => index % step === 0 || index === routePoints.length - 1)
             .map(p => [Number(p.lat.toFixed(6)), Number(p.lng.toFixed(6))]);
-        event.content = JSON.stringify({ route: compressedGeo });
-    } else {
-        event.content = "";
+        
+        // "Clean Break": Move JSON to a specific tag 'g'
+        event.tags.push(['g', JSON.stringify({ route: compressedGeo })]);
     }
+
+    // Set human-friendly content
+    event.content = title 
+        ? `${title}\n\nRode ${distanceMiles.toFixed(2)} miles in ${durationStr}! 🚲 #bikel`
+        : `Rode ${distanceMiles.toFixed(2)} miles in ${durationStr}! 🚲 #bikel`;
+
+    if (description) event.content += `\n\n${description}`;
 
     console.log('[Nostr] Signing and publishing ride event...');
     await event.publish();
@@ -206,6 +220,7 @@ export async function publishRide(
     try {
         const runstrEvent = new NDKEvent(ndk);
         runstrEvent.kind = 1301;
+        // Keep the same tags and content for compatibility with our new standard
         runstrEvent.tags = [...event.tags];
         runstrEvent.content = event.content;
         await runstrEvent.publish();
@@ -288,8 +303,119 @@ export interface RideEvent {
     title?: string;
     description?: string;
     image?: string;
-    kind: 33301;
+    kind: 33301 | 1301 | 1;
     confidence?: number;
+    elevation?: string;
+    client?: string;
+}
+
+/**
+ * Helper to parse a RideEvent from a generic NDKEvent.
+ * Supports legacy JSON-in-content and new Bikel JSON-in-tag 'g'.
+ */
+function parseRideEvent(event: NDKEvent): RideEvent | null {
+    try {
+        const distanceTag = event.getMatchingTags("distance")[0];
+        const distanceVal = parseFloat(distanceTag?.[1] || "0");
+        const distanceUnit = distanceTag?.[2]?.toLowerCase() || "mi";
+        
+        // Convert KM to Miles if necessary
+        const distanceMiles = distanceUnit === 'km' ? distanceVal * 0.621371 : distanceVal;
+        const distance = distanceMiles.toFixed(2);
+
+        const durationRaw = event.getMatchingTags("duration")[0]?.[1] || "0";
+        let durationSecs = 0;
+        if (durationRaw.includes(':')) {
+            const parts = durationRaw.split(':').reverse();
+            durationSecs = parseInt(parts[0] || "0", 10) + (parseInt(parts[1] || "0", 10) * 60) + (parseInt(parts[2] || "0", 10) * 3600);
+        } else {
+            durationSecs = parseInt(durationRaw, 10);
+        }
+        
+        const visibility = event.getMatchingTags("visibility")[0]?.[1] || "full";
+        const imageTag = event.getMatchingTags("image")[0]?.[1];
+        let image = imageTag;
+        if (!image) {
+            const imeta = event.getMatchingTags("imeta")[0];
+            if (imeta) {
+                const urlMatch = imeta.find(t => t.startsWith("url "))?.substring(4);
+                if (urlMatch) image = urlMatch;
+            }
+        }
+        if (!image && event.kind === 1) {
+            const urlMatch = event.content.match(/https?:\/\/\S+\.(jpg|jpeg|png|webp|gif)/i);
+            if (urlMatch) image = urlMatch[0];
+        }
+
+        const titleTag = event.getMatchingTags("title")[0]?.[1];
+        const exerciseTag = event.getMatchingTags("exercise")[0]?.[1]?.toLowerCase() || "";
+        const tags = event.getMatchingTags("t").map(t => t[1].toLowerCase());
+        const hasCyclingContext = exerciseTag.includes("cycling") || 
+                               exerciseTag.includes("bike") || 
+                               tags.some(t => ["cycling", "bike", "bikel", "bikeride"].includes(t)) ||
+                               event.content.toLowerCase().includes("cycling") ||
+                               event.content.toLowerCase().includes("bike");
+
+        // Strict filter: If it's Kind 1 or 1301, it MUST have cycling context
+        if ((event.kind === 1 || event.kind === 1301) && !hasCyclingContext) return null;
+        
+        // Skip empty stats if not native bikel
+        const client = event.getMatchingTags("client")[0]?.[1];
+        const isBikel = client === 'bikel';
+        if (!isBikel && distanceMiles === 0 && durationSecs === 0) return null;
+
+        let description = event.getMatchingTags("summary")[0]?.[1] || event.getMatchingTags("description")[0]?.[1];
+        if (!description && event.kind === 1) {
+            description = event.content.replace(/https?:\/\/\S+/g, "").trim();
+        }
+        const confidenceRaw = event.getMatchingTags("confidence")[0]?.[1];
+        const confidence = confidenceRaw ? parseFloat(confidenceRaw) : undefined;
+        
+        const mins = durationSecs >= 3600 ? 0 : Math.floor(durationSecs / 60); 
+        const secs = durationSecs % 60;
+
+        const elevation = event.getMatchingTags("elevation")[0]?.[1];
+
+        let route: number[][] = [];
+        if (visibility === 'full') {
+            const gTag = event.getMatchingTags("g")[0]?.[1];
+            if (gTag) {
+                try {
+                    const parsed = JSON.parse(gTag);
+                    if (parsed.route && Array.isArray(parsed.route)) route = parsed.route;
+                } catch (e) { }
+            }
+            if (route.length === 0 && event.content && event.content.includes('"route"')) {
+                try {
+                    const jsonMatch = event.content.match(/\{.*"route"\s*:.*?\}/s);
+                    const jsonToParse = jsonMatch ? jsonMatch[0] : event.content;
+                    const parsed = JSON.parse(jsonToParse);
+                    if (parsed.route && Array.isArray(parsed.route)) route = parsed.route;
+                } catch (e) { }
+            }
+        }
+
+        return {
+            id: event.id,
+            pubkey: event.author.npub,
+            hexPubkey: event.pubkey,
+            time: event.created_at || Math.floor(Date.now() / 1000),
+            distance,
+            duration: durationRaw.includes(':') ? durationRaw : `${Math.floor(durationSecs / 60)}m ${durationSecs % 60}s`,
+            visibility,
+            route,
+            kind: event.kind as 33301 | 1301 | 1,
+            title: titleTag,
+            description,
+            image,
+            confidence,
+            elevation,
+            client
+        };
+    } catch (e) {
+        console.warn("Failed to parse event", event.id, e);
+        return null;
+    }
 }
 
 export async function fetchMyRides(): Promise<RideEvent[]> {
@@ -297,60 +423,62 @@ export async function fetchMyRides(): Promise<RideEvent[]> {
     const signer = await getSigner();
     const user = await signer.user();
 
-    const filter = { kinds: [33301 as any], authors: [user.pubkey], limit: 50 };
+    const filters: NDKFilter[] = [
+        { kinds: [33301 as any, 1301 as any], authors: [user.pubkey], limit: 50 },
+        { kinds: [1 as any], authors: [user.pubkey], "#t": ["RUNSTR", "cycling", "fitness", "bikel"], limit: 50 }
+    ];
+
     console.log('[Nostr] Fetching personal ride history...');
-    const events = await ndk.fetchEvents(filter);
-    const rides: RideEvent[] = [];
+    const events = await ndk.fetchEvents(filters);
+    const ridesMap = new Map<string, RideEvent>();
 
     for (const event of events) {
-        try {
-            const distance = event.getMatchingTags("distance")[0]?.[1] || "0";
-            const durationSecs = parseInt(event.getMatchingTags("duration")[0]?.[1] || "0", 10);
-            const visibility = event.getMatchingTags("visibility")[0]?.[1] || "full";
-            const title = event.getMatchingTags("title")[0]?.[1];
-            const description = event.getMatchingTags("summary")[0]?.[1];
-            const image = event.getMatchingTags("image")[0]?.[1];
-            const confidenceRaw = event.getMatchingTags("confidence")[0]?.[1];
-            const confidence = confidenceRaw ? parseFloat(confidenceRaw) : undefined;
-            const mins = Math.floor(durationSecs / 60);
-            const secs = durationSecs % 60;
-            let route: number[][] = [];
-            if (visibility === 'full' && event.content) {
-                try { const parsed = JSON.parse(event.content); if (parsed.route && Array.isArray(parsed.route)) route = parsed.route; } catch (e) { }
+        const parsed = parseRideEvent(event);
+        if (parsed) {
+            const dTag = event.getMatchingTags("d")[0]?.[1] || "";
+            const key = dTag ? `${event.pubkey}-${dTag}` : event.id;
+
+            // Prefer Kind 33301 if both exist
+            if (!ridesMap.has(key) || parsed.kind === 33301) {
+                ridesMap.set(key, parsed);
             }
-            rides.push({ id: event.id, pubkey: event.author.npub, hexPubkey: event.pubkey, time: event.created_at || Math.floor(Date.now() / 1000), distance, duration: `${mins}m ${secs}s`, visibility, route, kind: 33301, title, description, image, confidence });
-        } catch (e) { console.warn("Failed to parse personal event", event.id); }
+        }
     }
-    return rides.sort((a, b) => b.time - a.time);
+    return Array.from(ridesMap.values()).sort((a, b) => b.time - a.time);
 }
 
 export async function fetchUserRides(targetPubkey: string): Promise<RideEvent[]> {
     const ndk = await connectNDK();
-    const filter = { kinds: [33301 as any], authors: [targetPubkey], limit: 50 };
-    console.log(`[Nostr] Fetching rides for user: ${targetPubkey.substring(0, 8)}`);
-    const events = await ndk.fetchEvents(filter);
-    const rides: RideEvent[] = [];
+    
+    // Support targetPubkey as npub or hex
+    let hexPubkey = targetPubkey;
+    if (targetPubkey.startsWith('npub1')) {
+        const user = ndk.getUser({ npub: targetPubkey });
+        hexPubkey = user.pubkey;
+    }
+
+    const filters: NDKFilter[] = [
+        { kinds: [33301 as any, 1301 as any], authors: [hexPubkey], limit: 50 },
+        { kinds: [1 as any], authors: [hexPubkey], "#t": ["RUNSTR", "cycling", "fitness", "bikel"], limit: 50 }
+    ];
+
+    console.log(`[Nostr] Fetching rides for user ${hexPubkey.substring(0, 8)}...`);
+    const events = await ndk.fetchEvents(filters);
+    const ridesMap = new Map<string, RideEvent>();
 
     for (const event of events) {
-        try {
-            const distance = event.getMatchingTags("distance")[0]?.[1] || "0";
-            const durationSecs = parseInt(event.getMatchingTags("duration")[0]?.[1] || "0", 10);
-            const visibility = event.getMatchingTags("visibility")[0]?.[1] || "full";
-            const title = event.getMatchingTags("title")[0]?.[1];
-            const description = event.getMatchingTags("summary")[0]?.[1];
-            const image = event.getMatchingTags("image")[0]?.[1];
-            const confidenceRaw = event.getMatchingTags("confidence")[0]?.[1];
-            const confidence = confidenceRaw ? parseFloat(confidenceRaw) : undefined;
-            const mins = Math.floor(durationSecs / 60);
-            const secs = durationSecs % 60;
-            let route: number[][] = [];
-            if (visibility === 'full' && event.content) {
-                try { const parsed = JSON.parse(event.content); if (parsed.route && Array.isArray(parsed.route)) route = parsed.route; } catch (e) { }
+        const parsed = parseRideEvent(event);
+        if (parsed) {
+            const dTag = event.getMatchingTags("d")[0]?.[1] || "";
+            const key = dTag ? `${event.pubkey}-${dTag}` : event.id;
+
+            // Prefer Kind 33301 if both exist (e.g. dual-pub)
+            if (!ridesMap.has(key) || parsed.kind === 33301) {
+                ridesMap.set(key, parsed);
             }
-            rides.push({ id: event.id, pubkey: event.author.npub, hexPubkey: event.pubkey, time: event.created_at || Math.floor(Date.now() / 1000), distance, duration: `${mins}m ${secs}s`, visibility, route, kind: 33301, title, description, image, confidence });
-        } catch (e) { console.warn("Failed to parse user event", event.id); }
+        }
     }
-    return rides.sort((a, b) => b.time - a.time);
+    return Array.from(ridesMap.values()).sort((a, b) => b.time - a.time);
 }
 
 export async function getPrivateKeyHex(): Promise<string | null> {
@@ -435,37 +563,46 @@ export interface ContestEvent {
 
 export async function fetchRecentRides(): Promise<RideEvent[]> {
     const ndk = await connectNDK();
-    const filters: NDKFilter[] = [{ kinds: [33301 as any], limit: 100 }];
-    console.log("[Nostr] Fetching global Bikel rides...");
+    const filters: NDKFilter[] = [
+        { kinds: [33301 as any, 1301 as any], limit: 100 },
+        { kinds: [1 as any], "#t": ["RUNSTR", "cycling", "fitness", "bikel"], limit: 50 }
+    ];
+    console.log("[Nostr] Fetching recent Bikel & Runstr rides...");
     const events = await Promise.race([
         ndk.fetchEvents(filters),
-        new Promise<Set<NDKEvent>>((resolve) => setTimeout(() => resolve(new Set()), 8000))
+        new Promise<Set<NDKEvent>>((resolve) => setTimeout(() => resolve(new Set()), 12000))
     ]) as Set<NDKEvent>;
-    const rides: RideEvent[] = [];
+    console.log(`[Nostr] Fetched ${events.size} raw events, filtering locally...`);
+    
+    const ridesMap = new Map<string, RideEvent>();
 
     for (const event of events) {
         const hasBikelClient = event.getMatchingTags("client").some(t => t[1] === "bikel");
-        const hasCyclingTag = event.getMatchingTags("t").some(t => ["cycling", "bikel", "bikeride"].includes(t[1]));
-        if (!hasBikelClient && !hasCyclingTag) continue;
-        try {
-            const distance = event.getMatchingTags("distance")[0]?.[1] || "0";
-            const durationSecs = parseInt(event.getMatchingTags("duration")[0]?.[1] || "0", 10);
-            const visibility = event.getMatchingTags("visibility")[0]?.[1] || "full";
-            const title = event.getMatchingTags("title")[0]?.[1];
-            const description = event.getMatchingTags("summary")[0]?.[1];
-            const image = event.getMatchingTags("image")[0]?.[1];
-            const confidenceRaw = event.getMatchingTags("confidence")[0]?.[1];
-            const confidence = confidenceRaw ? parseFloat(confidenceRaw) : undefined;
-            const mins = Math.floor(durationSecs / 60);
-            const secs = durationSecs % 60;
-            let route: number[][] = [];
-            if (visibility === 'full' && event.content) {
-                try { const parsed = JSON.parse(event.content); if (parsed.route && Array.isArray(parsed.route)) route = parsed.route; } catch (e) { }
+        const hasCyclingTag = event.getMatchingTags("t").some(t => ["cycling", "bikel", "bikeride", "fitness"].includes(t[1].toLowerCase()));
+        
+        const isRunstr = event.kind === 1301 || 
+                         event.getMatchingTags("client").some(t => t[1].toUpperCase() === "RUNSTR") ||
+                         event.getMatchingTags("t").some(t => t[1].toUpperCase() === "RUNSTR");
+
+        if (event.kind !== 33301 && event.kind !== 1301 && !isRunstr) continue;
+        if (!hasBikelClient && !hasCyclingTag && !isRunstr) continue;
+
+        const parsed = parseRideEvent(event);
+        
+        if (parsed && (parsed.route.length > 0 || hasBikelClient || isRunstr)) {
+            // Filter noise: empty external posts
+            if (isRunstr && parsed.distance === "0.00" && parsed.duration === "0m 0s") continue;
+
+            const dTag = event.getMatchingTags("d")[0]?.[1] || "";
+            const key = dTag ? `${event.pubkey}-${dTag}` : event.id;
+            
+            // Prefer Kind 33301 if both exist
+            if (!ridesMap.has(key) || parsed.kind === 33301) {
+                ridesMap.set(key, parsed);
             }
-            rides.push({ id: event.id, pubkey: event.author.npub, hexPubkey: event.pubkey, time: event.created_at || Math.floor(Date.now() / 1000), distance, duration: `${mins}m ${secs}s`, visibility, route, title, description, image, kind: 33301, confidence });
-        } catch (e) { console.warn("Failed to parse a recent ride", event.id); }
+        }
     }
-    return rides.sort((a, b) => b.time - a.time);
+    return Array.from(ridesMap.values()).sort((a, b) => b.time - a.time);
 }
 
 export async function fetchScheduledRides(): Promise<ScheduledRideEvent[]> {

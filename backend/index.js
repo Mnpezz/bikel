@@ -439,9 +439,10 @@ async function processFinishedContests() {
 
             // ── Leaderboard ───────────────────────────────
             const leaderboard = new Map();
-            const suffix = parameter.includes('distance') ? 'mi'
+            const suffix = parameter === 'max_distance' ? 'mi'
+                : parameter === 'max_elevation' ? 'ft'
                 : parameter === 'fastest_mile' ? 'mph'
-                    : 'pts';
+                : 'pts';
 
             for (const ride of rides) {
                 const confidence = parseFloat(ride.getMatchingTags('confidence')[0]?.[1] || '0');
@@ -454,11 +455,15 @@ async function processFinishedContests() {
                 }
 
                 const distance = parseFloat(ride.getMatchingTags('distance')[0]?.[1] || '0');
+                const elevation = parseFloat(ride.getMatchingTags('elevation')[0]?.[1] || '0');
                 const duration = parseInt(ride.getMatchingTags('duration')[0]?.[1] || '0', 10);
 
-                if (parameter === 'max_distance' || parameter === 'max_elevation') {
+                if (parameter === 'max_distance') {
                     leaderboard.set(pubkey, (leaderboard.get(pubkey) || 0) + distance);
-                    console.log(`[Bot]   - Ride ${ride.id.substring(0, 8)} by ${pubkey.substring(0, 8)} accepted: ${distance.toFixed(2)} ${suffix}`);
+                    console.log(`[Bot]   - Ride ${ride.id.substring(0, 8)} by ${pubkey.substring(0, 8)} accepted: ${distance.toFixed(2)} mi`);
+                } else if (parameter === 'max_elevation') {
+                    leaderboard.set(pubkey, (leaderboard.get(pubkey) || 0) + elevation);
+                    console.log(`[Bot]   - Ride ${ride.id.substring(0, 8)} by ${pubkey.substring(0, 8)} accepted: ${elevation.toFixed(0)} ft`);
                 } else if (parameter === 'fastest_mile' && distance >= 1) {
                     const pace = distance / (duration / 3600);
                     if (pace > (leaderboard.get(pubkey) || 0)) {
