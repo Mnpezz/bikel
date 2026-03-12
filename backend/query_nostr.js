@@ -101,6 +101,7 @@ async function run() {
             for (const ride of rides) {
                 const rStart = ride.created_at;
                 const dist = ride.getMatchingTags('distance')[0]?.[1] ?? '0';
+                const elv = ride.getMatchingTags('elevation')[0]?.[1] ?? '0';
                 const conf = parseFloat(ride.getMatchingTags('confidence')[0]?.[1] || '0');
 
                 const inWin = rStart >= start && rStart <= end;
@@ -108,7 +109,7 @@ async function run() {
 
                 console.log(`  Ride ${ride.id.substring(0, 8)} by ${ride.pubkey.substring(0, 8)}...`);
                 console.log(`    Created: ${new Date(rStart * 1000).toISOString()} (In window: ${inWin})`);
-                console.log(`    Distance: ${dist}, Confidence: ${conf} (Conf OK: ${confOk})`);
+                console.log(`    Distance: ${dist} mi, Elevation: ${elv} ft, Confidence: ${conf} (Conf OK: ${confOk})`);
                 console.log(`    STATUS: ${inWin && confOk ? '✅ ELIGIBLE' : '❌ REJECTED'}`);
             }
         }
@@ -135,8 +136,9 @@ async function run() {
     console.log("33301 ride events found:", rideEvents.size);
     for (const e of rideEvents) {
         const distance = e.getMatchingTags('distance')[0]?.[1] ?? '?';
+        const elevation = e.getMatchingTags('elevation')[0]?.[1] ?? '?';
         const confidence = e.getMatchingTags('confidence')[0]?.[1] ?? '?';
-        console.log(`  id=${e.id.substring(0, 12)}... pubkey=${e.pubkey.substring(0, 8)}... distance=${distance} confidence=${confidence}`);
+        console.log(`  id=${e.id.substring(0, 12)}... pubkey=${e.pubkey.substring(0, 8)}... dist=${distance}mi elv=${elevation}ft conf=${confidence}`);
     }
 
     // Your rides — full tag dump for debugging challenge eligibility
@@ -146,10 +148,11 @@ async function run() {
     console.log(`Found ${myRides.size} ride(s):`);
     for (const e of myRides) {
         const distance = e.getMatchingTags('distance')[0]?.[1] ?? '(missing)';
+        const elevation = e.getMatchingTags('elevation')[0]?.[1] ?? '(missing)';
         const confidence = e.getMatchingTags('confidence')[0]?.[1] ?? '(missing)';
         const duration = e.getMatchingTags('duration')[0]?.[1] ?? '(missing)';
         const date = new Date(e.created_at * 1000).toISOString();
-        console.log(`  id=${e.id.substring(0, 12)}... created=${date} distance=${distance} confidence=${confidence} duration=${duration}`);
+        console.log(`  id=${e.id.substring(0, 12)}... created=${date} dist=${distance}mi elv=${elevation}ft conf=${confidence} dur=${duration}s`);
     }
 
     process.exit(0);
