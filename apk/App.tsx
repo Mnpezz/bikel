@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { StyleSheet, Text, View, TouchableOpacity, Dimensions, Platform, ScrollView, TextInput, Alert, KeyboardAvoidingView, ActivityIndicator, Image, RefreshControl, BackHandler, AppState } from 'react-native';
 import * as Location from 'expo-location';
 import { LeafletView, MapLayerType, MapShapeType, WebViewLeafletEvents } from 'react-native-leaflet-view';
-import { Bike, Square, Play, Zap, History, Settings, CalendarPlus, X, MessageSquare, Globe, LocateFixed, Map, Mail, Trash2 } from 'lucide-react-native';
+import { Bike, Square, Play, Zap, History, Settings, CalendarPlus, X, MessageSquare, Globe, LocateFixed, Map, Mail, Trash2, RotateCw } from 'lucide-react-native';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import * as Clipboard from 'expo-clipboard';
 import * as ImagePicker from 'expo-image-picker';
@@ -16,12 +16,12 @@ const LOCATION_TASK = 'BIKEL_LOCATION_TASK';
 const PASSIVE_SCAN_TASK = 'BIKEL_PASSIVE_SCAN'; // legacy name kept for stop-cleanup only
 const DRAFT_TASK = 'BIKEL_DRAFT_TASK';
 
-const MAX_DRAFTS = 10;
+const MAX_DRAFTS = 21;
 const BIKE_SPEED_MIN_MPH = 5;   // m/s * 2.237 — covers slow cyclists & GPS jitter
-const BIKE_SPEED_MAX_MPH = 35;
-const CAR_SPEED_THRESHOLD_MPH = 40;
-const CAR_SPIKE_LIMIT = 3;
-const IDLE_STOP_SECONDS = 90;
+const BIKE_SPEED_MAX_MPH = 25;
+const CAR_SPEED_THRESHOLD_MPH = 30;
+const CAR_SPIKE_LIMIT = 2;
+const IDLE_STOP_SECONDS = 50;
 // Warmup: must see N readings in bike range before committing route points
 const WARMUP_NEEDED = 2;
 
@@ -181,7 +181,7 @@ TaskManager.defineTask(DRAFT_TASK, async ({ data, error }: any) => {
         state.warmupCount--;
       }
     } else if (state.phase === 'recording') {
-      if (maxBatchSpeed > 1) state.lastMovingTime = Date.now();
+      if (maxBatchSpeed > 3) state.lastMovingTime = Date.now();
 
       // Detection reset (sustained car speed)
       const lastThree = state.route.slice(-3);
@@ -226,6 +226,16 @@ function distanceMiles(lat1: number, lon1: number, lat2: number, lon2: number): 
   const dLon = (lon2 - lon1) * Math.PI / 180;
   const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function distToSegment(px: number, py: number, x1: number, y1: number, x2: number, y2: number): number {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  if (dx === 0 && dy === 0) return distanceMiles(px, py, x1, y1);
+  const t = ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy);
+  if (t < 0) return distanceMiles(px, py, x1, y1);
+  if (t > 1) return distanceMiles(px, py, x2, y2);
+  return distanceMiles(px, py, x1 + t * dx, y1 + t * dy);
 }
 
 // Helper: finalize and save a draft to AsyncStorage + send notification
@@ -280,6 +290,32 @@ async function finalizeDraft(startTimeMs: number, rawRoute: any[], spikes: numbe
   }
 }
 
+async function stopRecordingManually() {
+  try {
+    const stateRaw = await AsyncStorage.getItem('bikel_draft_state');
+    if (!stateRaw) return;
+    const state = JSON.parse(stateRaw);
+    if (state.phase !== 'recording' || state.route.length < 5) return;
+
+    await logEvent("🛑 Manual stop triggered from UI");
+    state.phase = 'saving';
+    await AsyncStorage.setItem('bikel_draft_state', JSON.stringify(state));
+    await finalizeDraft(state.startTime, state.route, state.spikes);
+
+    // Reset state to warmup
+    const now = Date.now();
+    const newState = { phase: 'warmup', warmupCount: 0, route: [], spikes: 0, startTime: now, lastMovingTime: now, lastPoint: state.lastPoint, lastSpeed: state.lastSpeed };
+    await AsyncStorage.setItem('bikel_draft_state', JSON.stringify(newState));
+
+    await Notifications.scheduleNotificationAsync({
+      content: { title: '🚴 Bikel', body: 'Watching for bike rides in background…', data: { type: 'watching' } },
+      trigger: null,
+    });
+  } catch (e) {
+    console.error('[App] manual stop failed:', e);
+  }
+}
+
 // ── Main App Component ─────────────────────────────────
 export default function App() {
   const [location, setLocation] = useState<Location.LocationObject | null>(null);
@@ -298,6 +334,7 @@ export default function App() {
   const [mapCenter, setMapCenter] = useState<{ lat: number, lng: number } | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [profiles, setProfiles] = useState<Record<string, any>>({});
+  const [loadingStatus, setLoadingStatus] = useState('');
 
   const [showHistory, setShowHistory] = useState(false);
   const [showFeed, setShowFeed] = useState(false);
@@ -357,6 +394,7 @@ export default function App() {
   const [newComment, setNewComment] = useState('');
   const [isPublishingComment, setIsPublishingComment] = useState(false);
 
+  const [selectedMapRide, setSelectedMapRide] = useState<RideEvent | null>(null);
   const [activeDMUser, setActiveDMUser] = useState<string | null>(null);
   const [dmMessages, setDmMessages] = useState<DMessage[]>([]);
   const [newDMText, setNewDMText] = useState('');
@@ -586,12 +624,6 @@ export default function App() {
       // Author Profile (Inner view)
       if (viewingAuthor) { setViewingAuthor(null); return true; }
 
-      // Route Preview (Map layer)
-      if (selectedRoute.length > 0) { setSelectedRoute([]); return true; }
-
-      // Debug Logs (Inner view)
-      if (showLogs) { setShowLogs(false); return true; }
-
       // Content Leaderboard (Inner view)
       if (selectedContest) { setSelectedContest(null); return true; }
 
@@ -606,13 +638,19 @@ export default function App() {
       if (showSchedule) { setShowSchedule(false); return true; }
       if (showFeed) { setShowFeed(false); return true; }
 
+      // Ride Detail Card (Map overlay) - checked last so it reappears when overlays close
+      if (selectedMapRide) { setSelectedMapRide(null); return true; }
+
+      // Route Preview (Map layer)
+      if (selectedRoute.length > 0) { setSelectedRoute([]); return true; }
+
       // If none of the above are active, allow default behavior (exit app)
       return false;
     };
 
     const backHandler = BackHandler.addEventListener('hardwareBackPress', onBackPress);
     return () => backHandler.remove();
-  }, [activeDMUser, showDiscussion, viewingAuthor, selectedRoute, selectedContest, showPostRideModal, selectedDraft, showSettings, showHistory, showSchedule, showFeed, showLogs]);
+  }, [activeDMUser, showDiscussion, viewingAuthor, selectedRoute, selectedContest, showPostRideModal, selectedDraft, showSettings, showHistory, showSchedule, showFeed, showLogs, selectedMapRide]);
 
   // ── Map Sync Logic ──────────────────────────────────
   const rideAgeColor = (rideTime: number): { color: string; opacity: number } => {
@@ -669,6 +707,7 @@ export default function App() {
     filteredGlobalRides.forEach(ride => {
       const { color, opacity } = rideAgeColor(ride.time);
       shapes.push({
+        id: `ride_${ride.id}`,
         shapeType: MapShapeType.POLYLINE,
         positions: ride.route.map(([lat, lng]) => ({ lat, lng })),
         color: color,
@@ -718,35 +757,50 @@ export default function App() {
     }
   };
 
-  const loadFeeds = async () => {
+  const loadFeeds = async (retryNum = 0) => {
     setIsFeedLoading(true);
+    if (retryNum === 0) setLoadingStatus('Connecting to Nostr...');
+    else setLoadingStatus(`Retrying feed sync (attempt ${retryNum})...`);
+
     try {
-      const results = await Promise.allSettled([
-        fetchMyRides(),
-        fetchRecentRides(),
-        fetchScheduledRides(),
-        fetchContests()
-      ]);
+      setLoadingStatus('Fetching Recent Rides...');
+      const recentRides = await fetchRecentRides();
+      setGlobalRides(recentRides);
+
+      setLoadingStatus('Fetching Group Rides...');
+      const scheduled = await fetchScheduledRides();
+      setScheduledRides(scheduled);
+
+      setLoadingStatus('Fetching Challenges...');
+      const contests = await fetchContests();
+      setActiveContests(contests);
+
+      setLoadingStatus('Fetching Personal Rides...');
+      const my = await fetchMyRides();
+      setMyRides(my);
 
       let extractedPubkeys: string[] = [];
+      extractedPubkeys.push(...recentRides.map(r => r.hexPubkey || r.pubkey));
+      extractedPubkeys.push(...scheduled.map(r => r.hexPubkey || r.pubkey));
+      extractedPubkeys.push(...contests.map(c => c.hexPubkey || c.pubkey));
 
-      if (results[0].status === 'fulfilled') setMyRides(results[0].value);
-      if (results[1].status === 'fulfilled') {
-        setGlobalRides(results[1].value);
-        extractedPubkeys.push(...results[1].value.map(r => r.hexPubkey || r.pubkey));
-      }
-      if (results[2].status === 'fulfilled') {
-        setScheduledRides(results[2].value);
-        extractedPubkeys.push(...results[2].value.map(r => r.hexPubkey || r.pubkey));
-      }
-      if (results[3].status === 'fulfilled') {
-        setActiveContests(results[3].value);
-        extractedPubkeys.push(...results[3].value.map(c => c.hexPubkey || c.pubkey));
+      if (extractedPubkeys.length > 0) {
+        setLoadingStatus('Syncing Profiles...');
+        loadAuthorProfiles(extractedPubkeys).catch(console.error);
       }
 
-      if (extractedPubkeys.length > 0) loadAuthorProfiles(extractedPubkeys).catch(console.error);
+      // Check if we found anything. If empty across all global feeds, retry up to 3 times.
+      const totalFound = recentRides.length + scheduled.length + contests.length;
+      if (totalFound === 0 && retryNum < 3) {
+        setLoadingStatus(`No rides found yet. Retrying in 3s...`);
+        setTimeout(() => loadFeeds(retryNum + 1), 3000);
+        return;
+      }
+
+      setLoadingStatus('');
     } catch (e) {
       console.error("Critical error in loadFeeds:", e);
+      setLoadingStatus('Error loading feeds.');
     } finally {
       setIsFeedLoading(false);
     }
@@ -1039,13 +1093,35 @@ export default function App() {
           mapShapes={mapShapes}
           onMessageReceived={(message: any) => {
             if (message.event === WebViewLeafletEvents.ON_MAP_MARKER_CLICKED) {
-              const markerID = message.payload?.mapMarkerID;
-              if (markerID && markerID.startsWith('ride_')) {
-                const rideId = markerID.replace('ride_', '');
+              const idStr = message.payload?.mapMarkerID;
+              if (idStr && idStr.startsWith('ride_')) {
+                const rideId = idStr.replace('ride_', '');
                 const ride = filteredGlobalRides.find(r => r.id === rideId);
                 if (ride) {
-                  setSelectedDiscussionRide(ride);
-                  setShowDiscussion(true);
+                  setSelectedMapRide(ride);
+                  setSelectedRoute(ride.route.map(pt => ({ lat: pt[0], lng: pt[1] })));
+                }
+              }
+            } else if (message.event === WebViewLeafletEvents.ON_MAP_TOUCHED) {
+              const touch = message.payload?.touchLatLng;
+              if (touch) {
+                let nearestRide = null;
+                let minDistance = 0.05; // ~80 meters threshold
+
+                for (const ride of filteredGlobalRides) {
+                  if (!ride.route) continue;
+                  for (let i = 0; i < ride.route.length - 1; i++) {
+                    const d = distToSegment(touch.lat, touch.lng, ride.route[i][0], ride.route[i][1], ride.route[i + 1][0], ride.route[i + 1][1]);
+                    if (d < minDistance) {
+                      minDistance = d;
+                      nearestRide = ride;
+                    }
+                  }
+                }
+
+                if (nearestRide) {
+                  setSelectedMapRide(nearestRide);
+                  setSelectedRoute(nearestRide.route.map(pt => ({ lat: pt[0], lng: pt[1] })));
                 }
               }
             }
@@ -1053,18 +1129,112 @@ export default function App() {
         />
       </View>
 
-      <TouchableOpacity
-        style={{ position: 'absolute', bottom: 180, right: 20, backgroundColor: 'rgba(0,0,0,0.6)', padding: 12, borderRadius: 30 }}
-        onPress={async () => {
-          try {
-            let loc = await Location.getLastKnownPositionAsync();
-            if (!loc) loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Low });
-            if (loc) { setLocation(loc); setMapCenter({ lat: loc.coords.latitude, lng: loc.coords.longitude }); setSelectedRoute([]); }
-          } catch (e) { }
-        }}
-      >
-        <LocateFixed size={24} color="#00ffaa" />
-      </TouchableOpacity>
+      {/* Center Map Button */}
+      <View style={{ position: 'absolute', bottom: 180, right: 20, gap: 12 }}>
+        <TouchableOpacity
+          style={{ backgroundColor: 'rgba(0,0,0,0.6)', padding: 12, borderRadius: 30 }}
+          onPress={async () => {
+            try {
+              let loc = await Location.getLastKnownPositionAsync();
+              if (!loc) loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Low });
+              if (loc) {
+                setLocation(loc);
+                setMapCenter({ lat: loc.coords.latitude, lng: loc.coords.longitude });
+                // Just center, don't clear anything
+              }
+            } catch (e) { }
+          }}
+        >
+          <LocateFixed size={24} color="#00ffaa" />
+        </TouchableOpacity>
+
+        {/* Reset Map Button */}
+        <TouchableOpacity
+          style={{ backgroundColor: 'rgba(0,0,0,0.6)', padding: 12, borderRadius: 30 }}
+          onPress={async () => {
+            try {
+              setSelectedRoute([]);
+              setSelectedMapRide(null);
+            } catch (e) { }
+          }}
+        >
+          <RotateCw size={24} color="#00ffaa" />
+        </TouchableOpacity>
+      </View>
+
+      {/* Ride Detail Card */}
+      {selectedMapRide && !showFeed && !showDiscussion && !activeDMUser && !viewingAuthor && !showSettings && !showHistory && !showSchedule && !showPostRideModal && (
+        <View style={{ position: 'absolute', top: 180, left: 20, right: 20, backgroundColor: 'rgba(22, 26, 31, 0.95)', borderRadius: 16, padding: 16, borderWidth: 1, borderColor: 'rgba(0, 255, 170, 0.2)', shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.5, shadowRadius: 15, elevation: 10 }}>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
+            <View style={{ flex: 1 }}>
+              <Text style={{ color: '#00ffaa', fontWeight: 'bold', fontSize: 16 }} numberOfLines={1}>{selectedMapRide.title || 'Untitled Ride'}</Text>
+              <Text style={{ color: '#aaa', fontSize: 12, marginTop: 2 }}>
+                By {profiles[selectedMapRide.hexPubkey]?.nip05 || profiles[selectedMapRide.hexPubkey]?.name || selectedMapRide.pubkey.substring(0, 10) + '...'}
+              </Text>
+            </View>
+            <TouchableOpacity onPress={() => setSelectedMapRide(null)} style={{ padding: 4 }}>
+              <X size={20} color="#666" />
+            </TouchableOpacity>
+          </View>
+
+          <View style={{ flexDirection: 'row', gap: 12, marginBottom: 16 }}>
+            <View style={{ flex: 1, backgroundColor: 'rgba(255,255,255,0.05)', padding: 8, borderRadius: 8, alignItems: 'center' }}>
+              <Text style={{ color: '#fff', fontSize: 14, fontWeight: 'bold' }}>{selectedMapRide.distance} mi</Text>
+              <Text style={{ color: '#888', fontSize: 9 }}>DISTANCE</Text>
+            </View>
+            <View style={{ flex: 1, backgroundColor: 'rgba(255,255,255,0.05)', padding: 8, borderRadius: 8, alignItems: 'center' }}>
+              <Text style={{ color: '#fff', fontSize: 14, fontWeight: 'bold' }}>{selectedMapRide.duration}</Text>
+              <Text style={{ color: '#888', fontSize: 9 }}>TIME</Text>
+            </View>
+            <View style={{ flex: 1, backgroundColor: 'rgba(255,255,255,0.05)', padding: 8, borderRadius: 8, alignItems: 'center' }}>
+              <Text style={{ color: '#fff', fontSize: 14, fontWeight: 'bold' }}>
+                {(() => {
+                  const d = parseFloat(selectedMapRide.distance || '0');
+                  const p = selectedMapRide.duration.match(/(\d+)h\s*(\d+)m|(\d+)m/);
+                  let m = 0;
+                  if (p) {
+                    if (p[1]) m = parseInt(p[1]) * 60 + parseInt(p[2] || '0');
+                    else if (p[3]) m = parseInt(p[3]);
+                  }
+                  return m > 0 ? (d / (m / 60)).toFixed(1) : '0';
+                })()}
+              </Text>
+              <Text style={{ color: '#888', fontSize: 9 }}>AVG MPH</Text>
+            </View>
+          </View>
+
+          <View style={{ flexDirection: 'row', gap: 8 }}>
+            <TouchableOpacity
+              style={{ flex: 1, backgroundColor: 'rgba(0,204,255,0.15)', paddingVertical: 10, borderRadius: 8, alignItems: 'center', borderColor: 'rgba(0,204,255,0.3)', borderWidth: 1 }}
+              onPress={() => { setSelectedDiscussionRide(selectedMapRide); setShowDiscussion(true); }}
+            >
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <MessageSquare size={14} color="#00ccff" />
+                <Text style={{ color: '#00ccff', fontWeight: 'bold', fontSize: 11 }}>DISCUSSION</Text>
+              </View>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={{ flex: 1, backgroundColor: 'rgba(255,255,255,0.08)', paddingVertical: 10, borderRadius: 8, alignItems: 'center' }}
+              onPress={() => setActiveDMUser(selectedMapRide.hexPubkey)}
+            >
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <Mail size={14} color="#fff" />
+                <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 11 }}>DM AUTHOR</Text>
+              </View>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={{ paddingHorizontal: 12, backgroundColor: 'rgba(0,255,170,0.1)', paddingVertical: 10, borderRadius: 8, alignItems: 'center' }}
+              onPress={() => {
+                if (selectedMapRide.route && selectedMapRide.route.length > 0) {
+                  setMapCenter({ lat: selectedMapRide.route[0][0], lng: selectedMapRide.route[0][1] });
+                }
+              }}
+            >
+              <LocateFixed size={18} color="#00ffaa" />
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
 
       {/* Header */}
       <View style={styles.headerPanel}>
@@ -1315,7 +1485,12 @@ export default function App() {
                       {r.route && r.route.length > 0 && (
                         <TouchableOpacity
                           style={{ flex: 1, backgroundColor: 'rgba(0,255,170,0.08)', paddingVertical: 9, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(0,255,170,0.2)' }}
-                          onPress={() => { setSelectedRoute(r.route!.map(pt => ({ lat: pt[0], lng: pt[1] }))); setShowHistory(false); }}
+                          onPress={() => {
+                            setSelectedRoute(r.route!.map(pt => ({ lat: pt[0], lng: pt[1] })));
+                            setSelectedMapRide(r);
+                            setMapCenter({ lat: r.route![0][0], lng: r.route![0][1] });
+                            setShowHistory(false);
+                          }}
                         >
                           <Text style={{ color: '#00ffaa', fontWeight: 'bold', fontSize: 12 }}>🗺️ MAP</Text>
                         </TouchableOpacity>
@@ -1368,7 +1543,7 @@ export default function App() {
             {isFeedLoading && (
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                 <ActivityIndicator size="small" color="#00ffaa" />
-                <Text style={{ color: '#00ffaa', fontSize: 12 }}>Loading…</Text>
+                <Text style={{ color: '#00ffaa', fontSize: 11 }}>{loadingStatus || 'Loading…'}</Text>
               </View>
             )}
           </View>
@@ -1416,7 +1591,23 @@ export default function App() {
                       <Text style={{ color: '#fff', fontSize: 13 }}>⏱️ {formatDuration(Math.floor((Date.now() - liveRecording.startTime) / 1000))}</Text>
                       <Text style={{ color: '#555', fontSize: 13 }}>{liveRecording.points} pts</Text>
                     </View>
-                    <Text style={{ color: '#555', fontSize: 11 }}>Draft will save automatically when you stop riding.</Text>
+                    <Text style={{ color: '#555', fontSize: 11, marginBottom: 12 }}>Draft will save automatically when you stop riding.</Text>
+                    <TouchableOpacity
+                      style={{ backgroundColor: 'rgba(255,77,79,0.15)', paddingVertical: 10, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,77,79,0.3)' }}
+                      onPress={async () => {
+                        Alert.alert("Stop Recording", "Save this ride draft and stop tracking now?", [
+                          { text: "Cancel", style: "cancel" },
+                          {
+                            text: "STOP & SAVE", style: "destructive", onPress: async () => {
+                              await stopRecordingManually();
+                              await loadDrafts();
+                            }
+                          }
+                        ]);
+                      }}
+                    >
+                      <Text style={{ color: '#ff4d4f', fontWeight: 'bold', fontSize: 13 }}>🏁 STOP & SAVE DRAFT NOW</Text>
+                    </TouchableOpacity>
                   </View>
                 )}
 
@@ -1546,7 +1737,17 @@ export default function App() {
 
                     return (
                       <>
-                        {upcomingContests.length === 0 && <Text style={styles.emptyText}>No active challenges right now.</Text>}
+                        {upcomingContests.length === 0 && (
+                          <View style={{ alignItems: 'center', marginTop: 40 }}>
+                            <Text style={styles.emptyText}>No active challenges right now.</Text>
+                            <TouchableOpacity
+                              style={{ marginTop: 12, backgroundColor: 'rgba(234,179,8,0.1)', paddingVertical: 8, paddingHorizontal: 16, borderRadius: 8, borderWidth: 1, borderColor: 'rgba(234,179,8,0.3)' }}
+                              onPress={() => loadFeeds()}
+                            >
+                              <Text style={{ color: '#eab308', fontWeight: 'bold', fontSize: 12 }}>RETRY SYNC</Text>
+                            </TouchableOpacity>
+                          </View>
+                        )}
                         {upcomingContests.map(c => renderContest(c, false))}
                         {pastContests.length > 0 && <Text style={{ color: '#888', fontSize: 16, fontWeight: 'bold', marginTop: 24, marginBottom: 12 }}>Past Challenges</Text>}
                         {pastContests.map(c => renderContest(c, true))}
@@ -1570,7 +1771,17 @@ export default function App() {
                     const pastRides = scheduledRides.filter(r => r.startTime < nowSeconds).sort((a, b) => b.startTime - a.startTime);
                     return (
                       <>
-                        {upcomingRides.length === 0 && <Text style={styles.emptyText}>No upcoming rides.</Text>}
+                        {upcomingRides.length === 0 && (
+                          <View style={{ alignItems: 'center', marginTop: 40 }}>
+                            <Text style={styles.emptyText}>No upcoming rides.</Text>
+                            <TouchableOpacity
+                              style={{ marginTop: 12, backgroundColor: 'rgba(0,255,170,0.1)', paddingVertical: 8, paddingHorizontal: 16, borderRadius: 8, borderWidth: 1, borderColor: 'rgba(0,255,170,0.3)' }}
+                              onPress={() => loadFeeds()}
+                            >
+                              <Text style={{ color: '#00ffaa', fontWeight: 'bold', fontSize: 12 }}>RETRY SYNC</Text>
+                            </TouchableOpacity>
+                          </View>
+                        )}
                         {upcomingRides.map(r => {
                           const profile = profiles[r.hexPubkey];
                           const displayName = profile?.nip05 || profile?.name || r.pubkey.substring(0, 10) + '...';
@@ -1591,7 +1802,12 @@ export default function App() {
                                 {/* Left: Secondary Icon Actions */}
                                 <View style={{ flexDirection: 'row', gap: 14, alignItems: 'center' }}>
                                   {r.route && r.route.length > 0 && (
-                                    <TouchableOpacity onPress={() => { setShowFeed(false); setSelectedRoute(r.route!.map(pt => ({ lat: pt[0], lng: pt[1] }))); }}>
+                                    <TouchableOpacity onPress={() => {
+                                      setShowFeed(false);
+                                      setSelectedRoute(r.route!.map(pt => ({ lat: pt[0], lng: pt[1] })));
+                                      setSelectedMapRide(r as any);
+                                      setMapCenter({ lat: r.route![0][0], lng: r.route![0][1] });
+                                    }}>
                                       <Map size={18} color="#00ffaa" />
                                     </TouchableOpacity>
                                   )}
@@ -1722,7 +1938,15 @@ export default function App() {
               <>
                 <Text style={{ color: '#00ffaa', fontSize: 16, fontWeight: 'bold', marginBottom: 12 }}>Recent Public Rides</Text>
                 {globalRides.length === 0 ? (
-                  <Text style={styles.emptyText}>No public rides found.</Text>
+                  <View style={{ alignItems: 'center', marginTop: 40 }}>
+                    <Text style={styles.emptyText}>No public rides found.</Text>
+                    <TouchableOpacity
+                      style={{ marginTop: 12, backgroundColor: 'rgba(0,204,255,0.1)', paddingVertical: 8, paddingHorizontal: 16, borderRadius: 8, borderWidth: 1, borderColor: 'rgba(0,204,255,0.3)' }}
+                      onPress={() => loadFeeds()}
+                    >
+                      <Text style={{ color: '#00ccff', fontWeight: 'bold', fontSize: 12 }}>RETRY SYNC</Text>
+                    </TouchableOpacity>
+                  </View>
                 ) : (
                   globalRides.map(r => {
                     const profile = profiles[r.hexPubkey];
@@ -1762,7 +1986,12 @@ export default function App() {
                             <Text style={{ color: '#00ccff', fontWeight: 'bold', fontSize: 12 }}>💬 DISCUSS</Text>
                           </TouchableOpacity>
                           {r.route && r.route.length > 0 && (
-                            <TouchableOpacity style={{ backgroundColor: 'rgba(0,255,170,0.1)', paddingVertical: 8, paddingHorizontal: 12, borderRadius: 6, alignItems: 'center', flex: 1 }} onPress={() => { setShowFeed(false); setSelectedRoute(r.route!.map(pt => ({ lat: pt[0], lng: pt[1] }))); }}>
+                            <TouchableOpacity style={{ backgroundColor: 'rgba(0,255,170,0.1)', paddingVertical: 8, paddingHorizontal: 12, borderRadius: 6, alignItems: 'center', flex: 1 }} onPress={() => {
+                              setShowFeed(false);
+                              setSelectedRoute(r.route!.map(pt => ({ lat: pt[0], lng: pt[1] })));
+                              setSelectedMapRide(r);
+                              setMapCenter({ lat: r.route![0][0], lng: r.route![0][1] });
+                            }}>
                               <Text style={{ color: '#00ffaa', fontWeight: 'bold', fontSize: 12 }}>🗺️ MAP</Text>
                             </TouchableOpacity>
                           )}
@@ -2293,7 +2522,7 @@ const styles = StyleSheet.create({
   statDivider: { width: 1, backgroundColor: 'rgba(255, 255, 255, 0.1)' },
   statValue: { color: '#00ffaa', fontSize: 32, fontWeight: '800' },
   statLabel: { color: '#9aa5b1', fontSize: 12, fontWeight: '600', marginTop: 4, letterSpacing: 1 },
-  bottomPanel: { position: 'absolute', bottom: 40, left: 20, right: 20 },
+  bottomPanel: { position: 'absolute', bottom: 60, left: 20, right: 20 },
   recordButton: { backgroundColor: '#00ffaa', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', padding: 20, borderRadius: 20, gap: 12, shadowColor: '#00ffaa', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 10, elevation: 8 },
   stopButton: { backgroundColor: '#161a1f', borderColor: '#ff4d4f', borderWidth: 2, shadowColor: '#ff4d4f' },
   recordButtonText: { color: '#000', fontSize: 18, fontWeight: '800', letterSpacing: 1 },

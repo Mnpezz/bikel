@@ -424,7 +424,7 @@ function App() {
                 </h3>
                 {corridors.slice(0, 8).map((c, i) => (
                   <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-                    <div 
+                    <div
                       style={{ fontSize: '11px', color: '#9ba1a6', fontFamily: 'monospace', cursor: 'pointer', borderBottom: '1px dashed rgba(155, 161, 166, 0.4)' }}
                       onClick={() => setMapFocus([c.lat1, c.lng1])}
                       title="Click to focus map"
@@ -931,7 +931,7 @@ function App() {
             </div>
           </div>
           <p style={{ textAlign: 'center', fontSize: '16px', marginBottom: '32px' }}>Download the official Android APK to passively record maps, upload photos, and broadcast rides securely to any Nostr relay!</p>
-          <a href="https://github.com/Mnpezz/bikel/releases/download/v1.2.0/app-release.apk" download className="btn btn-primary" style={{ width: '100%', padding: '16px', fontSize: '18px', justifyContent: 'center', background: '#00ffaa', color: '#000', fontWeight: '900', textTransform: 'uppercase', letterSpacing: '1px', boxShadow: '0 0 20px rgba(0,255,170,0.4)' }}>Download Android APK</a>
+          <a href="https://github.com/Mnpezz/bikel/releases/download/v1.3.0/app-release.apk" download className="btn btn-primary" style={{ width: '100%', padding: '16px', fontSize: '18px', justifyContent: 'center', background: '#00ffaa', color: '#000', fontWeight: '900', textTransform: 'uppercase', letterSpacing: '1px', boxShadow: '0 0 20px rgba(0,255,170,0.4)' }}>Download Android APK</a>
           <div style={{ marginTop: '24px', fontSize: '12px', color: 'rgba(255,255,255,0.4)', textAlign: 'center' }}>Requires Android 10.0 or higher.</div>
         </div>
       </div>
