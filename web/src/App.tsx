@@ -601,13 +601,22 @@ function App() {
                                 <div className="ride-header"><div style={{ fontWeight: 'bold', color: '#00ffaa' }}>{event.name}</div></div>
                                 <div style={{ fontSize: '12px', color: '#aaa', marginTop: '4px', marginBottom: '8px' }}>{format(new Date(event.startTime * 1000), "EEEE, MMM d 'at' h:mm a")}{event.timezone ? ` (${event.timezone})` : ""}</div>
                                 <div style={{ fontSize: '13px', marginBottom: '12px', lineHeight: 1.4 }}>{event.description}</div>
-                                <div className="ride-stats" style={{ justifyContent: 'space-between' }}>
-                                  <div className="stat-item" style={{ flex: 1, color: '#888' }}>
-                                    📍 {event.locationStr}
-                                    {event.attendees && event.attendees.length > 0 && <span style={{ marginLeft: '12px', color: '#00ffaa' }}>👤 {event.attendees.length} attending</span>}
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '12px', padding: '10px', background: 'rgba(255,255,255,0.03)', borderRadius: '8px' }}>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', color: '#888' }}>
+                                    <span style={{ flexShrink: 0 }}>📍</span>
+                                    <span style={{ flex: 1 }}>{event.locationStr}</span>
                                   </div>
+                                  {event.attendees && event.attendees.length > 0 && (
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', color: '#00ffaa', fontWeight: 'bold' }}>
+                                      <span>👤</span>
+                                      <span>{event.attendees.length} attending</span>
+                                    </div>
+                                  )}
+                                </div>
+
+                                <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '12px' }}>
                                   {user && (
-                                    <button className="btn btn-surface" style={{ padding: '4px 12px', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px', background: event.attendees?.includes(user.pubkey) ? 'rgba(0,255,170,0.1)' : undefined, color: event.attendees?.includes(user.pubkey) ? '#00ffaa' : undefined, borderColor: event.attendees?.includes(user.pubkey) ? '#00ffaa' : undefined }} onClick={(e) => { e.stopPropagation(); handleRSVP(event); }} disabled={event.attendees?.includes(user.pubkey)}>
+                                    <button className="btn btn-surface" style={{ padding: '6px 16px', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '6px', background: event.attendees?.includes(user.pubkey) ? 'rgba(0,255,170,0.1)' : undefined, color: event.attendees?.includes(user.pubkey) ? '#00ffaa' : undefined, borderColor: event.attendees?.includes(user.pubkey) ? '#00ffaa' : undefined }} onClick={(e) => { e.stopPropagation(); handleRSVP(event); }} disabled={event.attendees?.includes(user.pubkey)}>
                                       <CheckCircle size={14} /> {event.attendees?.includes(user.pubkey) ? 'Attending' : 'RSVP'}
                                     </button>
                                   )}

@@ -227,17 +227,21 @@ function parseRideEvent(event: NDKEvent): RideEvent | null {
         const confidenceRaw = event.getMatchingTags("confidence")[0]?.[1];
         const confidence = confidenceRaw ? parseFloat(confidenceRaw) : undefined;
 
-        const mins = Math.floor(durationSecs / 60);
+        const hrs = Math.floor(durationSecs / 3600);
+        const mins = durationSecs >= 3600 ? Math.floor((durationSecs % 3600) / 60) : Math.floor(durationSecs / 60);
         const secs = durationSecs % 60;
 
         const elevation = event.getMatchingTags("elevation")[0]?.[1];
 
         let route: number[][] = [];
         if (visibility === 'full') {
+            const routeTag = event.getMatchingTags("route")[0]?.[1];
             const gTag = event.getMatchingTags("g")[0]?.[1];
-            if (gTag) {
+            const rawRouteData = routeTag || gTag;
+            
+            if (rawRouteData) {
                 try {
-                    const parsed = JSON.parse(gTag);
+                    const parsed = JSON.parse(rawRouteData);
                     if (parsed.route && Array.isArray(parsed.route)) route = parsed.route;
                 } catch (e) { }
             }
@@ -257,7 +261,9 @@ function parseRideEvent(event: NDKEvent): RideEvent | null {
             hexPubkey: event.pubkey,
             time: event.created_at || Math.floor(Date.now() / 1000),
             distance,
-            duration: durationRaw.includes(':') ? durationRaw : `${mins}m ${secs}s`,
+            duration: durationRaw.includes(':') 
+                ? (durationRaw.split(':').length === 2 ? `00:${durationRaw}` : durationRaw)
+                : `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`,
             rawDuration: durationSecs,
             visibility,
             route,

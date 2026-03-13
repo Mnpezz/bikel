@@ -646,7 +646,15 @@ export default function App() {
       if (selectedContest) { setSelectedContest(null); return true; }
 
       // Post Ride / Draft Review (Modals)
-      if (showPostRideModal) { setShowPostRideModal(false); return true; }
+      if (showPostRideModal) {
+        setShowPostRideModal(false);
+        if (postingFromDraft) {
+          setPostingFromDraft(null);
+          setFeedTab('drafts');
+          setShowFeed(true); // Return to drafts list
+        }
+        return true;
+      }
       if (selectedDraft) { setSelectedDraft(null); return true; }
 
       // Settings / History / Schedule / Feed (Top-level views)
@@ -1220,25 +1228,25 @@ export default function App() {
           <View style={{ marginBottom: 16 }}>
             <View style={{ flexDirection: 'row', gap: 12, marginBottom: 12 }}>
               <View style={{ flex: 1, backgroundColor: 'rgba(255,255,255,0.05)', padding: 10, borderRadius: 8, alignItems: 'center' }}>
-                <Text style={{ color: '#fff', fontSize: 16, fontWeight: 'bold' }}>{selectedMapRide.distance} mi</Text>
+                <Text style={{ color: '#fff', fontSize: 14, fontWeight: 'bold' }}>{selectedMapRide.distance} mi</Text>
                 <Text style={{ color: '#888', fontSize: 10 }}>DISTANCE</Text>
               </View>
-              <View style={{ flex: 1, backgroundColor: 'rgba(255,255,255,0.05)', padding: 10, borderRadius: 8, alignItems: 'center' }}>
-                <Text style={{ color: '#fff', fontSize: 16, fontWeight: 'bold' }}>{selectedMapRide.duration}</Text>
+              <View style={{ flex: 1.2, backgroundColor: 'rgba(255,255,255,0.05)', padding: 10, borderRadius: 8, alignItems: 'center' }}>
+                <Text style={{ color: '#fff', fontSize: 14, fontWeight: 'bold' }}>{selectedMapRide.duration}</Text>
                 <Text style={{ color: '#888', fontSize: 10 }}>TIME</Text>
               </View>
             </View>
             <View style={{ flexDirection: 'row', gap: 12 }}>
               <View style={{ flex: 1, backgroundColor: 'rgba(255,255,255,0.05)', padding: 10, borderRadius: 8, alignItems: 'center' }}>
-                <Text style={{ color: '#00ccff', fontSize: 16, fontWeight: 'bold' }}>
-                  {selectedMapRide.rawDuration > 0 && parseFloat(selectedMapRide.distance) > 0 
-                    ? (parseFloat(selectedMapRide.distance) / (selectedMapRide.rawDuration / 3600)).toFixed(1) 
+                <Text style={{ color: '#00ccff', fontSize: 14, fontWeight: 'bold' }}>
+                  {selectedMapRide.rawDuration > 0 && parseFloat(selectedMapRide.distance) > 0
+                    ? (parseFloat(selectedMapRide.distance) / (selectedMapRide.rawDuration / 3600)).toFixed(1)
                     : '0'}
                 </Text>
                 <Text style={{ color: '#888', fontSize: 10 }}>AVG MPH</Text>
               </View>
               <View style={{ flex: 1, backgroundColor: 'rgba(255,255,255,0.05)', padding: 10, borderRadius: 8, alignItems: 'center' }}>
-                <Text style={{ color: '#fff', fontSize: 16, fontWeight: 'bold' }}>{selectedMapRide.elevation || '--'}</Text>
+                <Text style={{ color: '#fff', fontSize: 14, fontWeight: 'bold' }}>{selectedMapRide.elevation || '--'}</Text>
                 <Text style={{ color: '#888', fontSize: 10 }}>ELEVATION (FT)</Text>
               </View>
             </View>
@@ -1284,17 +1292,27 @@ export default function App() {
           <Text style={styles.headerText}>Bikel</Text>
         </View>
         <View style={{ flexDirection: 'row', gap: 16, alignItems: 'center' }}>
-          <TouchableOpacity onPress={() => { setShowSettings(false); setShowHistory(false); setShowFeed(false); setShowSchedule(!showSchedule); }}>
+          <TouchableOpacity onPress={() => {
+            setShowPostRideModal(false); setPostingFromDraft(null);
+            setShowSettings(false); setShowHistory(false); setShowFeed(false); setShowSchedule(!showSchedule);
+          }}>
             <CalendarPlus size={24} color={showSchedule ? "#00ffaa" : "#fff"} />
           </TouchableOpacity>
-          <TouchableOpacity onPress={() => { setShowSettings(false); setShowSchedule(false); setShowHistory(false); setShowFeed(!showFeed); }}>
+          <TouchableOpacity onPress={() => {
+            setShowPostRideModal(false); setPostingFromDraft(null);
+            setShowSettings(false); setShowSchedule(false); setShowHistory(false); setShowFeed(!showFeed);
+          }}>
             <Globe size={24} color={showFeed ? "#00ffaa" : "#fff"} />
           </TouchableOpacity>
-          <TouchableOpacity onPress={() => { setShowSettings(false); setShowSchedule(false); setShowFeed(false); setShowHistory(!showHistory); }}>
+          <TouchableOpacity onPress={() => {
+            setShowPostRideModal(false); setPostingFromDraft(null);
+            setShowSettings(false); setShowSchedule(false); setShowFeed(false); setShowHistory(!showHistory);
+          }}>
             <History size={24} color={showHistory ? "#00ffaa" : "#fff"} />
           </TouchableOpacity>
 
           <TouchableOpacity onPress={async () => {
+            setShowPostRideModal(false); setPostingFromDraft(null);
             setShowHistory(false); setShowSchedule(false); setShowFeed(false);
             if (!showSettings) {
               try {
@@ -1483,9 +1501,14 @@ export default function App() {
                     />
                     {/* Title + date row */}
                     <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 4 }}>
-                      <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 15, flex: 1, marginRight: 8 }} numberOfLines={1}>
-                        {r.title || 'Untitled Ride'}
-                      </Text>
+                      <View style={{ flex: 1, marginRight: 8 }}>
+                        <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 15 }} numberOfLines={1}>
+                          {r.title || 'Untitled Ride'}
+                        </Text>
+                        <View style={{ marginTop: 2, alignSelf: 'flex-start', backgroundColor: r.route && r.route.length > 0 ? 'rgba(0,255,170,0.1)' : 'rgba(0,204,255,0.1)', paddingHorizontal: 6, paddingVertical: 1, borderRadius: 4, borderWidth: 1, borderColor: r.route && r.route.length > 0 ? 'rgba(0,255,170,0.2)' : 'rgba(0,204,255,0.2)' }}>
+                          <Text style={{ color: r.route && r.route.length > 0 ? '#00ffaa' : '#00ccff', fontSize: 8, fontWeight: 'bold' }}>{r.route && r.route.length > 0 ? 'GPS ROUTE' : 'DATA ONLY'}</Text>
+                        </View>
+                      </View>
                       <Text style={{ color: '#9ba1a6', fontSize: 11 }}>
                         {rideDate.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}
                       </Text>
@@ -1500,30 +1523,39 @@ export default function App() {
                     {/* Stats row */}
                     <View style={{ flexDirection: 'row', gap: 8, marginBottom: 12 }}>
                       <View style={{ flex: 1, backgroundColor: 'rgba(0,255,170,0.06)', padding: 10, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(0,255,170,0.12)' }}>
-                        <Text style={{ color: '#00ffaa', fontSize: 16, fontWeight: 'bold' }}>{distNum.toFixed(1)}</Text>
+                        <Text style={{ color: '#00ffaa', fontSize: 13, fontWeight: 'bold' }}>{distNum.toFixed(1)}</Text>
                         <Text style={{ color: '#9ba1a6', fontSize: 10, marginTop: 2 }}>MILES</Text>
                       </View>
-                      <View style={{ flex: 1, backgroundColor: 'rgba(255,255,255,0.04)', padding: 10, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.06)' }}>
-                        <Text style={{ color: '#fff', fontSize: 16, fontWeight: 'bold' }}>{r.duration}</Text>
+                      <View style={{ flex: 1.3, backgroundColor: 'rgba(255,255,255,0.04)', padding: 10, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.06)' }}>
+                        <Text style={{ color: '#fff', fontSize: 13, fontWeight: 'bold' }}>{r.duration}</Text>
                         <Text style={{ color: '#9ba1a6', fontSize: 10, marginTop: 2 }}>TIME</Text>
                       </View>
                       {r.elevation && (
                         <View style={{ flex: 1, backgroundColor: 'rgba(255,255,255,0.04)', padding: 10, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.06)' }}>
-                          <Text style={{ color: '#fff', fontSize: 16, fontWeight: 'bold' }}>{r.elevation}</Text>
+                          <Text style={{ color: '#fff', fontSize: 13, fontWeight: 'bold' }}>{r.elevation}</Text>
                           <Text style={{ color: '#9ba1a6', fontSize: 10, marginTop: 2 }}>GAIN (FT)</Text>
                         </View>
                       )}
                       {distNum > 0 && r.duration && (() => {
-                        const parts = r.duration.match(/(\d+)h\s*(\d+)m|(\d+)m/);
                         let totalMins = 0;
-                        if (parts) {
-                          if (parts[1]) totalMins = parseInt(parts[1]) * 60 + parseInt(parts[2] || '0');
-                          else if (parts[3]) totalMins = parseInt(parts[3]);
+                        if (r.duration.includes(':')) {
+                          const parts = r.duration.split(':').reverse();
+                          const secs = parseInt(parts[0] || '0');
+                          const mins = parseInt(parts[1] || '0');
+                          const hrs = parseInt(parts[2] || '0');
+                          totalMins = (hrs * 60) + mins + (secs / 60);
+                        } else {
+                          // Legacy fallback for "3m 48s" or similar
+                          const parts = r.duration.match(/(\d+)h\s*(\d+)m|(\d+)m/);
+                          if (parts) {
+                            if (parts[1]) totalMins = parseInt(parts[1]) * 60 + parseInt(parts[2] || '0');
+                            else if (parts[3]) totalMins = parseInt(parts[3]);
+                          }
                         }
                         const avgSpeed = totalMins > 0 ? (distNum / (totalMins / 60)).toFixed(1) : null;
                         return avgSpeed ? (
                           <View style={{ flex: 1, backgroundColor: 'rgba(255,255,255,0.04)', padding: 10, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.06)' }}>
-                            <Text style={{ color: '#fff', fontSize: 16, fontWeight: 'bold' }}>{avgSpeed}</Text>
+                            <Text style={{ color: '#fff', fontSize: 13, fontWeight: 'bold' }}>{avgSpeed}</Text>
                             <Text style={{ color: '#9ba1a6', fontSize: 10, marginTop: 2 }}>MPH AVG</Text>
                           </View>
                         ) : null;
@@ -1544,6 +1576,16 @@ export default function App() {
                           <Text style={{ color: '#00ffaa', fontWeight: 'bold', fontSize: 12 }}>🗺️ MAP</Text>
                         </TouchableOpacity>
                       )}
+
+                      <TouchableOpacity
+                        style={{ flex: 1, backgroundColor: 'rgba(0,204,255,0.08)', paddingVertical: 9, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(0,204,255,0.2)' }}
+                        onPress={() => {
+                          setSelectedDiscussionRide(r);
+                          setShowDiscussion(true);
+                        }}
+                      >
+                        <Text style={{ color: '#00ccff', fontWeight: 'bold', fontSize: 12 }}>💬 DISCUSS</Text>
+                      </TouchableOpacity>
                       <TouchableOpacity
                         style={{ flex: 1, backgroundColor: isDeletingThis ? 'rgba(255,77,79,0.05)' : 'rgba(255,77,79,0.1)', paddingVertical: 9, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,77,79,0.25)' }}
                         disabled={isDeletingThis}
@@ -2005,35 +2047,44 @@ export default function App() {
                     return (
                       <View key={r.id} style={[styles.historyCard, { borderColor: 'rgba(255,255,255,0.05)' }]}>
                         <Image source={r.image ? { uri: r.image } : ((r.client?.toLowerCase() === 'runstr' || r.kind === 1301 || r.kind === 1) && r.client?.toLowerCase() !== 'bikel') ? require('./assets/runstrLogo.jpg') : require('./assets/bikelLogo.jpg')} style={{ width: '100%', height: 150, borderRadius: 8, marginBottom: 12 }} />
-                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-                          <View>
-                            <TouchableOpacity onPress={() => { setViewingAuthor(r.hexPubkey); setIsLoadingAuthor(true); fetchUserRides(r.hexPubkey).then(setAuthorRides).finally(() => setIsLoadingAuthor(false)); }}>
-                              <Text style={{ color: '#00ccff', fontSize: 12, textDecorationLine: 'underline' }}>{displayName}</Text>
-                            </TouchableOpacity>
-                            {r.client && r.client !== 'bikel' && (
-                              <Text style={{ color: '#00ccff', fontSize: 10, fontWeight: 'bold' }}>via {r.client.toLowerCase()}</Text>
-                            )}
+
+                        {/* Title Row */}
+                        <View style={{ marginBottom: 4, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <Text style={[styles.historyTime, { fontSize: 18, marginBottom: 2, flex: 1 }]}>{r.title || new Date(r.time * 1000).toLocaleDateString()}</Text>
+                          <View style={{ backgroundColor: r.route && r.route.length > 0 ? 'rgba(0,255,170,0.1)' : 'rgba(0,204,255,0.1)', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, borderWidth: 1, borderColor: r.route && r.route.length > 0 ? 'rgba(0,255,170,0.3)' : 'rgba(0,204,255,0.3)' }}>
+                            <Text style={{ color: r.route && r.route.length > 0 ? '#00ffaa' : '#00ccff', fontSize: 9, fontWeight: 'bold' }}>{r.route && r.route.length > 0 ? 'GPS ROUTE' : 'DATA ONLY'}</Text>
                           </View>
-                          <Text style={styles.historyTime}>{r.title || new Date(r.time * 1000).toLocaleDateString()}</Text>
                         </View>
-                        {r.description ? <Text style={{ color: '#ccc', fontSize: 13, marginBottom: 12 }}>{r.description}</Text> : null}
+
+                        {/* Author Row */}
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+                          <TouchableOpacity onPress={() => { setViewingAuthor(r.hexPubkey); setIsLoadingAuthor(true); fetchUserRides(r.hexPubkey).then(setAuthorRides).finally(() => setIsLoadingAuthor(false)); }}>
+                            <Text style={{ color: '#00ccff', fontSize: 13, textDecorationLine: 'underline', fontWeight: 'bold' }}>{displayName}</Text>
+                          </TouchableOpacity>
+                          {r.client && r.client !== 'bikel' && (
+                            <Text style={{ color: '#666', fontSize: 10, fontWeight: 'bold' }}>via {r.client.toLowerCase()}</Text>
+                          )}
+                        </View>
+
+                        {/* Description */}
+                        {r.description ? <Text style={{ color: '#ccc', fontSize: 13, marginBottom: 12, lineHeight: 18 }}>{r.description}</Text> : null}
                         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
-                          <View style={{ width: '48%', flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(255,255,255,0.03)', padding: 8, borderRadius: 6 }}>
+                          <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(255,255,255,0.03)', padding: 8, borderRadius: 6 }}>
                             <Route size={14} color="#00ffaa" />
                             <Text style={{ color: '#fff', fontSize: 13 }}>{r.distance} mi</Text>
                           </View>
-                          <View style={{ width: '48%', flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(255,255,255,0.03)', padding: 8, borderRadius: 6 }}>
+                          <View style={{ flex: 1.2, flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(255,255,255,0.03)', padding: 8, borderRadius: 6 }}>
                             <Clock size={14} color="#00ffaa" />
                             <Text style={{ color: '#fff', fontSize: 13 }}>{r.duration}</Text>
                           </View>
                           {r.rawDuration > 0 && parseFloat(r.distance) > 0 && (
-                            <View style={{ width: '48%', flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(255,255,255,0.03)', padding: 8, borderRadius: 6 }}>
+                            <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(255,255,255,0.03)', padding: 8, borderRadius: 6 }}>
                               <Gauge size={14} color="#00ccff" />
                               <Text style={{ color: '#fff', fontSize: 13 }}>{(parseFloat(r.distance) / (r.rawDuration / 3600)).toFixed(1)} mph</Text>
                             </View>
                           )}
                           {r.elevation && (
-                            <View style={{ width: '48%', flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(255,255,255,0.03)', padding: 8, borderRadius: 6 }}>
+                            <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(255,255,255,0.03)', padding: 8, borderRadius: 6 }}>
                               <ChevronUp size={14} color="#00ffaa" />
                               <Text style={{ color: '#fff', fontSize: 13 }}>{r.elevation} ft</Text>
                             </View>
@@ -2488,11 +2539,13 @@ export default function App() {
                     if (postRideScheduleMode) {
                       if (!postRideLocation) { Alert.alert("Missing Fields", "Please specify a meeting location."); return; }
                       const startUnix = Math.floor(new Date(postRideDate.getFullYear(), postRideDate.getMonth(), postRideDate.getDate(), postRideTime.getHours(), postRideTime.getMinutes()).getTime() / 1000);
+                      await logEvent(`📅 Scheduling ride: ${postRideTitle || "Untitled"}`);
                       await publishScheduledRide(postRideTitle || "Group Ride", postRideDesc || "Join my ride!", startUnix, postRideLocation, routePoints, postRideImageUrl, distance, duration);
-                      await publishRide(distance, duration, routePoints, postRidePrivacy, postRideTitle, postRideDesc, postRideImageUrl, confidenceToPost, elevation);
+                      await publishRide(distance, duration, routePoints, postRidePrivacy, postRideTitle, postRideDesc, postRideImageUrl, confidenceToPost, elevation, logEvent);
                       Alert.alert("Ride Scheduled!", "Your group ride was published.");
                     } else {
-                      await publishRide(distance, duration, routePoints, postRidePrivacy, postRideTitle, postRideDesc, postRideImageUrl, confidenceToPost, elevation);
+                      await logEvent(`📤 Posting ride: ${postRideTitle || "Untitled"}`);
+                      await publishRide(distance, duration, routePoints, postRidePrivacy, postRideTitle, postRideDesc, postRideImageUrl, confidenceToPost, elevation, logEvent);
                       Alert.alert("Ride Published!", "Your ride was published to Nostr.");
                     }
 
@@ -2507,7 +2560,9 @@ export default function App() {
                     setPostRidePrivacy('full'); setPostRideScheduleMode(false);
                     try { setMyRides(await fetchMyRides()); setGlobalRides(await fetchRecentRides()); } catch (e) { }
                   } catch (e: any) {
-                    Alert.alert("Failed to publish ride", e.message || "Unknown error.");
+                    const errorMsg = e.message || "Unknown error";
+                    await logEvent(`❌ PUBLISH ERROR: ${errorMsg}`);
+                    Alert.alert("Failed to publish ride", errorMsg);
                     console.error("Failed to publish ride", e);
                   }
                 }}>
