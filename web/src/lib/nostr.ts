@@ -152,6 +152,7 @@ export interface RideEvent {
     time: number;
     distance: string;
     duration: string;
+    rawDuration: number;
     visibility: string;
     route: number[][];
     title?: string;
@@ -172,7 +173,7 @@ function parseRideEvent(event: NDKEvent): RideEvent | null {
         const distanceTag = event.getMatchingTags("distance")[0];
         const distanceVal = parseFloat(distanceTag?.[1] || "0");
         const distanceUnit = distanceTag?.[2]?.toLowerCase() || "mi";
-        
+
         // Convert KM to Miles if necessary
         const distanceMiles = distanceUnit === 'km' ? distanceVal * 0.621371 : distanceVal;
         const distance = distanceMiles.toFixed(2);
@@ -204,15 +205,15 @@ function parseRideEvent(event: NDKEvent): RideEvent | null {
         const titleTag = event.getMatchingTags("title")[0]?.[1];
         const exerciseTag = event.getMatchingTags("exercise")[0]?.[1]?.toLowerCase() || "";
         const tags = event.getMatchingTags("t").map(t => t[1].toLowerCase());
-        const hasCyclingContext = exerciseTag.includes("cycling") || 
-                               exerciseTag.includes("bike") || 
-                               tags.some(t => ["cycling", "bike", "bikel", "bikeride"].includes(t)) ||
-                               event.content.toLowerCase().includes("cycling") ||
-                               event.content.toLowerCase().includes("bike");
+        const hasCyclingContext = exerciseTag.includes("cycling") ||
+            exerciseTag.includes("bike") ||
+            tags.some(t => ["cycling", "bike", "bikel", "bikeride"].includes(t)) ||
+            event.content.toLowerCase().includes("cycling") ||
+            event.content.toLowerCase().includes("bike");
 
         // Strict filter: If it's Kind 1 or 1301, it MUST have cycling context
         if ((event.kind === 1 || event.kind === 1301) && !hasCyclingContext) return null;
-        
+
         // Skip empty stats if not native bikel
         const client = event.getMatchingTags("client")[0]?.[1];
         const isBikel = client === 'bikel';
@@ -257,6 +258,7 @@ function parseRideEvent(event: NDKEvent): RideEvent | null {
             time: event.created_at || Math.floor(Date.now() / 1000),
             distance,
             duration: durationRaw.includes(':') ? durationRaw : `${mins}m ${secs}s`,
+            rawDuration: durationSecs,
             visibility,
             route,
             kind: event.kind as 33301 | 1301,
@@ -290,10 +292,10 @@ export async function fetchRecentRides(): Promise<RideEvent[]> {
     for (const event of events) {
         const hasBikelClient = event.getMatchingTags("client").some(t => t[1] === "bikel");
         const hasCyclingTag = event.getMatchingTags("t").some(t => ["cycling", "bikel", "bikeride", "fitness"].includes(t[1].toLowerCase()));
-        
-        const isRunstr = event.kind === 1301 || 
-                         event.getMatchingTags("client").some(t => t[1].toUpperCase() === "RUNSTR") ||
-                         event.getMatchingTags("t").some(t => t[1].toUpperCase() === "RUNSTR");
+
+        const isRunstr = event.kind === 1301 ||
+            event.getMatchingTags("client").some(t => t[1].toUpperCase() === "RUNSTR") ||
+            event.getMatchingTags("t").some(t => t[1].toUpperCase() === "RUNSTR");
 
         if (event.kind !== 33301 && event.kind !== 1301 && !isRunstr) continue;
         if (!hasBikelClient && !hasCyclingTag && !isRunstr) continue;

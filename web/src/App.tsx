@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo } from 'react';
-import { MapContainer, TileLayer, CircleMarker, Popup, Polyline, useMap } from 'react-leaflet';
-import { Bike, Activity, CalendarPlus, Zap, LogIn, Info, HelpCircle, Smartphone, X, Clock, Route, CheckCircle, RefreshCw, Map as MapIcon, ChevronUp, ChevronDown, Users, Database, Download, BarChart2, Trash2 } from 'lucide-react';
+import { MapContainer, TileLayer, CircleMarker, Popup, Polyline, useMap, LayerGroup } from 'react-leaflet';
+import { Bike, Activity, CalendarPlus, Zap, LogIn, Info, HelpCircle, Smartphone, X, Clock, Route, CheckCircle, RefreshCw, Map as MapIcon, ChevronUp, ChevronDown, Users, Database, Download, BarChart2, Trash2, Gauge, ArrowLeft } from 'lucide-react';
 import { formatDistanceToNow, format } from 'date-fns';
 import { connectNDK, fetchRecentRides, fetchUserRides, fetchScheduledRides, loginNip07, publishRSVP, connectNWC, zapRideEvent, fetchComments, publishComment, fetchDMs, sendDM, deleteRide } from './lib/nostr';
 import { nip19 } from 'nostr-tools';
@@ -81,6 +81,7 @@ function App() {
   const [scheduledRides, setScheduledRides] = useState<ScheduledRideEvent[]>([]);
   const [user, setUser] = useState<NDKUser | null>(null);
   const [selectedRide, setSelectedRide] = useState<RideEvent | null>(null);
+  const [lastSelectedRideId, setLastSelectedRideId] = useState<string | null>(null);
   const [viewingAuthor, setViewingAuthor] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'global' | 'personal' | 'scheduled' | 'author' | 'data'>('global');
   const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
@@ -131,6 +132,18 @@ function App() {
         : 'N/A',
     };
   }, [rides]);
+
+  useEffect(() => {
+    if (!selectedRide && lastSelectedRideId) {
+      // Small delay to ensure the list is rendered first
+      setTimeout(() => {
+        const element = document.getElementById(`ride-${lastSelectedRideId}`);
+        if (element) {
+          element.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+      }, 100);
+    }
+  }, [selectedRide, lastSelectedRideId]);
 
   useEffect(() => {
     if (activeDMUser) {
@@ -214,11 +227,13 @@ function App() {
       const personalRides = await fetchUserRides(nip07user.pubkey);
       setMyRides(personalRides);
       setViewMode('personal');
+      setSelectedRide(null);
     }
   };
 
   const toggleViewMode = () => {
     setViewMode(prev => prev === 'global' ? 'personal' : 'global');
+    setSelectedRide(null);
   };
 
   const loadAuthorProfile = async (npub: string) => {
@@ -337,9 +352,9 @@ function App() {
           <span className="relay-text">{isConnected ? 'Connected to Relays' : 'Connecting...'}</span>
         </div>
         <div className="header-actions">
-          <button className="btn btn-surface" style={{ padding: '8px', color: viewMode === 'global' ? '#00ffaa' : '#555' }} onClick={() => setViewMode('global')} title="View Recent Rides"><Activity size={20} /></button>
-          <button className="btn btn-surface" style={{ padding: '8px', color: viewMode === 'scheduled' ? '#00ffaa' : '#555' }} onClick={() => setViewMode('scheduled')} title="Upcoming Group Rides"><CalendarPlus size={20} /></button>
-          <button className="btn btn-surface" style={{ padding: '8px', color: viewMode === 'data' ? '#00ccff' : '#555' }} onClick={() => setViewMode('data')} title="Open Data / City Planner View"><Database size={20} /></button>
+          <button className="btn btn-surface" style={{ padding: '8px', color: viewMode === 'global' ? '#00ffaa' : '#555' }} onClick={() => { setViewMode('global'); setSelectedRide(null); }} title="View Recent Rides"><Activity size={20} /></button>
+          <button className="btn btn-surface" style={{ padding: '8px', color: viewMode === 'scheduled' ? '#00ffaa' : '#555' }} onClick={() => { setViewMode('scheduled'); setSelectedRide(null); }} title="Upcoming Group Rides"><CalendarPlus size={20} /></button>
+          <button className="btn btn-surface" style={{ padding: '8px', color: viewMode === 'data' ? '#00ccff' : '#555' }} onClick={() => { setViewMode('data'); setSelectedRide(null); }} title="Open Data / City Planner View"><Database size={20} /></button>
           <button className="btn btn-surface" style={{ padding: '8px', color: isNWCConnected ? '#eab308' : '#555' }} onClick={() => setShowNWCModal(true)} title="Connect Lightning Wallet"><Zap size={20} /></button>
           <button className="btn btn-surface" style={{ padding: '8px', color: '#555' }} onClick={() => setShowAbout(true)} title="About Bikel"><Info size={20} /></button>
           <button className="btn btn-surface" style={{ padding: '8px', color: '#555' }} onClick={() => setShowHowTo(true)} title="How to Use Bikel"><HelpCircle size={20} /></button>
@@ -500,113 +515,208 @@ function App() {
                   )}
                 </div>
                 <div className="ride-feed">
-                  {viewMode === 'global' && rides.length === 0 && <div className="ride-stat" style={{ padding: '12px' }}>No public rides found. Be the first!</div>}
-                  {viewMode === 'personal' && myRides.length === 0 && <div className="ride-stat" style={{ padding: '12px' }}>You haven't recorded any rides yet.</div>}
-                  {viewMode === 'scheduled' && scheduledRides.length === 0 && <div className="ride-stat" style={{ padding: '12px' }}>No upcoming group rides scheduled right now.</div>}
-                  {viewMode === 'author' && authorRides.length === 0 && <div className="ride-stat" style={{ padding: '12px' }}>Loading author rides...</div>}
-
-                  {viewMode === 'scheduled' ? (() => {
-                    const nowSeconds = Math.floor(Date.now() / 1000);
-                    const upcomingRides = scheduledRides.filter(r => r.startTime >= nowSeconds).sort((a, b) => a.startTime - b.startTime);
-                    return (
-                      <>
-                        {upcomingRides.map((event) => (
-                          <div className="ride-card" key={event.id} style={{ cursor: 'default' }}>
-                            <img src={event.image || '/bikelLogo.jpg'} alt="Ride Map" style={{ width: '100%', height: '120px', objectFit: 'cover', borderRadius: '8px', marginBottom: '12px' }} />
-                            <div className="ride-header"><div style={{ fontWeight: 'bold', color: '#00ffaa' }}>{event.name}</div></div>
-                            <div style={{ fontSize: '12px', color: '#aaa', marginTop: '4px', marginBottom: '8px' }}>{format(new Date(event.startTime * 1000), "EEEE, MMM d 'at' h:mm a")}{event.timezone ? ` (${event.timezone})` : ""}</div>
-                            <div style={{ fontSize: '13px', marginBottom: '12px', lineHeight: 1.4 }}>{event.description}</div>
-                            <div className="ride-stats" style={{ justifyContent: 'space-between' }}>
-                              <div className="stat-item" style={{ flex: 1, color: '#888' }}>
-                                📍 {event.locationStr}
-                                {event.attendees && event.attendees.length > 0 && <span style={{ marginLeft: '12px', color: '#00ffaa' }}>👤 {event.attendees.length} attending</span>}
-                              </div>
-                              {user && (
-                                <button className="btn btn-surface" style={{ padding: '4px 12px', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px', background: event.attendees?.includes(user.pubkey) ? 'rgba(0,255,170,0.1)' : undefined, color: event.attendees?.includes(user.pubkey) ? '#00ffaa' : undefined, borderColor: event.attendees?.includes(user.pubkey) ? '#00ffaa' : undefined }} onClick={(e) => { e.stopPropagation(); handleRSVP(event); }} disabled={event.attendees?.includes(user.pubkey)}>
-                                  <CheckCircle size={14} /> {event.attendees?.includes(user.pubkey) ? 'Attending' : 'RSVP'}
-                                </button>
-                              )}
-                            </div>
-                            <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.3)', marginTop: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                                <span>Org: <span style={{ cursor: 'pointer', textDecoration: 'underline' }} onClick={(e) => { e.stopPropagation(); loadAuthorProfile(event.pubkey); }}>{profiles[event.hexPubkey || event.pubkey]?.nip05 || profiles[event.hexPubkey || event.pubkey]?.name || `${event.pubkey.substring(0, 10)}...`}</span></span>
-                                {event.route && event.route.length > 0 && <button className="btn btn-surface" style={{ padding: '2px 8px', fontSize: '11px', background: 'rgba(0,255,170,0.1)', color: '#00ffaa' }} onClick={(e) => { e.stopPropagation(); setSelectedRide({ id: event.id, pubkey: event.pubkey, hexPubkey: event.hexPubkey, time: event.startTime, distance: event.distance || 'GPS Route', duration: event.duration || 'Scheduled', visibility: 'full', route: event.route!, kind: 33301, image: event.image }); }}>🗺️ Map</button>}
-                              </div>
-                              <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-                                {isNWCConnected && <button onClick={async (e) => { e.stopPropagation(); if (zappingEventId) return; if (!window.confirm(`Zap organizer 21 sats?`)) return; setZappingEventId(event.id); try { await zapRideEvent(event.id, event.hexPubkey, event.kind, 21, "Thanks for organizing this ride!"); alert("Successfully sent 21 sats!"); } catch (e: any) { alert("Zap failed: " + (e.message || "Unknown error")); } setZappingEventId(null); }} style={{ background: 'none', border: 'none', color: '#eab308', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px', fontSize: '12px' }}><Zap size={14} fill={zappingEventId === event.id ? "#eab308" : "none"} /> 21</button>}
-                                <button className="btn btn-primary" style={{ padding: '6px 12px', fontSize: '13px', background: '#00ccff', color: '#000', fontWeight: 'bold' }} onClick={() => setActiveDMUser(event.pubkey)}>Message Organizer</button>
-                              </div>
-                            </div>
-                          </div>
-                        ))}
-                      </>
-                    );
-                  })() : null}
-
-                  {viewMode === 'scheduled' && scheduledRides.length > 0 && (() => {
-                    const nowSeconds = Math.floor(Date.now() / 1000);
-                    const pastRides = scheduledRides.filter(r => r.startTime < nowSeconds).sort((a, b) => b.startTime - a.startTime);
-                    if (pastRides.length === 0) return null;
-                    return (
-                      <div style={{ marginTop: '24px' }}>
-                        <h3 style={{ color: '#888', marginBottom: '16px', fontSize: '14px', textTransform: 'uppercase', letterSpacing: '1px' }}>Past Rides</h3>
-                        {pastRides.map((event) => (
-                          <div className="ride-card" key={event.id} style={{ cursor: 'default', opacity: 0.6 }}>
-                            <img src={event.image || '/bikelLogo.jpg'} alt="Ride Map" style={{ width: '100%', height: '120px', objectFit: 'cover', borderRadius: '8px', marginBottom: '12px', filter: 'grayscale(50%)' }} />
-                            <div className="ride-header"><div style={{ fontWeight: 'bold', color: '#888' }}>{event.name}</div></div>
-                            <div style={{ fontSize: '12px', color: '#666', marginTop: '4px', marginBottom: '8px' }}>{format(new Date(event.startTime * 1000), "EEEE, MMM d 'at' h:mm a")}{event.timezone ? ` (${event.timezone})` : ""}</div>
-                            <div style={{ fontSize: '13px', marginBottom: '12px', lineHeight: 1.4, color: '#888' }}>{event.description}</div>
-                            <div className="ride-stats" style={{ borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                <div className="stat-item" style={{ color: '#888' }}><Users size={14} className="icon" /> {event.attendees.length} Past Riders</div>
-                                {event.route && event.route.length > 0 && <button className="stat-item" style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', cursor: 'pointer' }} onClick={(e) => { e.stopPropagation(); setSelectedRide({ id: event.dTag, pubkey: event.hexPubkey, hexPubkey: event.hexPubkey, time: event.startTime, distance: "0", duration: "0", visibility: "full", route: event.route!, kind: 33301 }); }}>🗺️ Map</button>}
-                              </div>
-                            </div>
-                          </div>
-                        ))}
+                  {selectedRide ? (
+                    <div className="ride-detail-view animate-fade-in">
+                      <div className="detail-header" style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '20px' }}>
+                        <button onClick={() => setSelectedRide(null)} className="btn btn-surface" style={{ padding: '6px 10px', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px' }}>
+                          <ArrowLeft size={16} /> Back
+                        </button>
+                        <h2 style={{ margin: 0, fontSize: '1.2rem', color: '#00ffaa', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+                          {selectedRide.title || "Ride Details"}
+                        </h2>
                       </div>
-                    );
-                  })()}
 
-                  {viewMode !== 'scheduled' && (viewMode === 'personal' ? myRides : viewMode === 'author' ? authorRides : filteredGlobalRides).map((ride) => (
-                    <div className="ride-card" key={ride.id} onClick={() => setSelectedRide(ride)}>
-                      <img src={ride.image || ((ride.client?.toLowerCase() === 'runstr' || ride.kind === 1301 || ride.kind === 1) && ride.client?.toLowerCase() !== 'bikel' ? '/runstrLogo.jpg' : '/bikelLogo.jpg')} alt="Ride Map" style={{ width: '100%', height: '120px', objectFit: 'cover', borderRadius: '8px', marginBottom: '12px' }} />
-                      <div className="ride-header">
-                        <div className="ride-pubkey" title={ride.pubkey}>
-                          <div className="avatar-mini"></div>
-                          <div style={{ display: 'flex', flexDirection: 'column' }}>
-                            <span onClick={(e) => { e.stopPropagation(); loadAuthorProfile(ride.pubkey); }} style={{ cursor: 'pointer' }}>{profiles[ride.hexPubkey || ride.pubkey]?.nip05 || profiles[ride.hexPubkey || ride.pubkey]?.name || `${ride.pubkey.substring(0, 10)}...`}</span>
-                            {ride.client && ride.client !== 'bikel' && (
-                              <span style={{ color: '#00ccff', fontSize: '10px', fontWeight: 'bold' }}>via {ride.client}</span>
-                            )}
+                      <div className="detail-card glass-panel" style={{ padding: '16px', borderRadius: '12px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.1)' }}>
+                        <div style={{ display: 'flex', gap: '12px', marginBottom: '16px' }}>
+                          <div className="avatar-mini" style={{ width: '40px', height: '40px' }}></div>
+                          <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+                            <span style={{ fontWeight: 'bold', color: '#fff' }}>{profiles[selectedRide.hexPubkey || selectedRide.pubkey]?.nip05 || profiles[selectedRide.hexPubkey || selectedRide.pubkey]?.name || `${selectedRide.pubkey.substring(0, 10)}...`}</span>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                              <span style={{ fontSize: '12px', color: '#888' }}>{formatDistanceToNow(selectedRide.time * 1000, { addSuffix: true })}</span>
+                              <span style={{ fontSize: '10px', padding: '2px 6px', borderRadius: '4px', background: selectedRide.route.length > 0 ? 'rgba(0,255,170,0.1)' : 'rgba(0,204,255,0.1)', color: selectedRide.route.length > 0 ? '#00ffaa' : '#00ccff', display: 'flex', alignItems: 'center', gap: '4px', fontWeight: 'bold' }}>
+                                {selectedRide.route.length > 0 ? <><Route size={10} /> GPS ROUTE</> : <><Database size={10} /> DATA ONLY</>}
+                              </span>
+                            </div>
                           </div>
                         </div>
-                        <div className="ride-time">{formatDistanceToNow(ride.time * 1000, { addSuffix: true })}</div>
-                      </div>
-                      {ride.description && <div style={{ fontSize: '13px', color: '#ddd', marginBottom: '12px', lineHeight: 1.4 }}>{ride.description}</div>}
-                      <div className="ride-stats">
-                        <div className="stat-item"><Route size={14} className="icon" /> {ride.distance} mi</div>
-                        <div className="stat-item"><Clock size={14} className="icon" /> {ride.duration}</div>
-                        {ride.elevation && <div className="stat-item"><ChevronUp size={14} className="icon" /> {ride.elevation} ft</div>}
-                        {ride.confidence !== undefined && (
-                          <div className="stat-item" style={{ color: ride.confidence >= 0.7 ? '#00ffaa' : '#ff4d4f', fontSize: '11px' }}>
-                            ●  {(ride.confidence * 100).toFixed(0)}%
+
+                        {selectedRide.image && selectedRide.image !== '/bikelLogo.jpg' && (
+                          <img src={selectedRide.image} alt="Ride Media" style={{ width: '100%', height: '160px', objectFit: 'cover', borderRadius: '8px', marginBottom: '16px' }} />
+                        )}
+
+                        {selectedRide.description && <div style={{ fontSize: '14px', color: '#eee', marginBottom: '16px', lineHeight: 1.5 }}>{selectedRide.description}</div>}
+
+                        <div className="ride-stats" style={{ background: 'rgba(0,0,0,0.3)', marginBottom: '16px' }}>
+                          <div className="stat-item"><Route size={16} className="icon" style={{ color: '#00ffaa' }} /> {selectedRide.distance} mi</div>
+                          <div className="stat-item"><Clock size={16} className="icon" style={{ color: '#00ffaa' }} /> {selectedRide.duration}</div>
+                          {selectedRide.rawDuration > 0 && parseFloat(selectedRide.distance) > 0 && (
+                            <div className="stat-item"><Gauge size={16} className="icon" style={{ color: '#00ccff' }} /> {(parseFloat(selectedRide.distance) / (selectedRide.rawDuration / 3600)).toFixed(1)} mph</div>
+                          )}
+                          {selectedRide.elevation && <div className="stat-item"><ChevronUp size={16} className="icon" style={{ color: '#00ffaa' }} /> {selectedRide.elevation} ft</div>}
+                        </div>
+
+                        <div className="modal-comments" style={{ padding: '0', borderTop: 'none', background: 'transparent' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer', marginBottom: '12px' }} onClick={() => setIsDiscussionExpanded(!isDiscussionExpanded)}>
+                            <h3 style={{ margin: 0, color: '#fff', fontSize: '15px' }}>Discussion ({comments.length})</h3>
+                            {isDiscussionExpanded ? <ChevronDown size={18} color="#fff" /> : <ChevronUp size={18} color="#fff" />}
                           </div>
-                        )}
-                        {isNWCConnected && viewMode !== 'personal' && <button onClick={async (e) => { e.stopPropagation(); if (zappingEventId) return; if (!window.confirm(`Zap rider 21 sats?`)) return; setZappingEventId(ride.id); try { await zapRideEvent(ride.id, ride.hexPubkey, ride.kind, 21, "Great ride!"); alert("Successfully sent 21 sats!"); } catch (e: any) { alert("Zap failed: " + (e.message || "Unknown error")); } setZappingEventId(null); }} className="stat-item" style={{ background: 'rgba(234,179,8,0.1)', border: '1px solid rgba(234,179,8,0.3)', color: '#eab308', marginLeft: 'auto', borderRadius: '12px', padding: '2px 8px', cursor: 'pointer' }}><Zap size={12} fill={zappingEventId === ride.id ? "#eab308" : "none"} /> 21</button>}
-                        {viewMode === 'personal' && user && ride.hexPubkey === user.pubkey && (
-                          <button
-                            onClick={async (e) => { e.stopPropagation(); await handleDeleteRide(ride.id); }}
-                            disabled={deletingRideId === ride.id}
-                            style={{ marginLeft: 'auto', background: 'none', border: 'none', color: deletingRideId === ride.id ? '#555' : '#ff4d4f', cursor: 'pointer', padding: '4px', display: 'flex', alignItems: 'center' }}
-                            title="Delete this ride"
-                          >
-                            <Trash2 size={14} />
-                          </button>
-                        )}
+                          {isDiscussionExpanded && (
+                            <>
+                              <div style={{ maxHeight: '300px', overflowY: 'auto', marginBottom: '16px', display: 'flex', flexDirection: 'column', gap: '12px', paddingRight: '4px' }}>
+                                {comments.length === 0 ? <div style={{ color: '#666', fontSize: '13px', fontStyle: 'italic' }}>No comments yet.</div> : comments.map(c => (
+                                  <div key={c.id} style={{ background: 'rgba(0,0,0,0.3)', padding: '10px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+                                      <span style={{ color: '#00ffaa', fontSize: '11px', fontWeight: 'bold' }}>{profiles[c.hexPubkey || c.pubkey]?.name || 'Anon'}</span>
+                                      <span style={{ color: '#888', fontSize: '10px' }}>{formatDistanceToNow(c.createdAt * 1000)}</span>
+                                    </div>
+                                    <div style={{ color: '#eee', fontSize: '13px', lineHeight: '1.4' }}>{c.content}</div>
+                                  </div>
+                                ))}
+                              </div>
+                              {user ? (
+                                <div style={{ display: 'flex', gap: '8px' }}>
+                                  <input type="text" value={newComment} onChange={(e) => setNewComment(e.target.value)} placeholder="Say something..." style={{ flex: 1, padding: '8px 12px', fontSize: '13px', borderRadius: '6px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', color: '#fff' }} onKeyDown={async (e) => { if (e.key === 'Enter' && newComment.trim()) { setIsPublishingComment(true); await publishComment(selectedRide!.id, newComment.trim()); setNewComment(''); fetchComments(selectedRide!.id).then(setComments); setIsPublishingComment(false); } }} />
+                                  <button className="btn btn-primary" style={{ padding: '6px 12px', fontSize: '13px' }} onClick={async () => { setIsPublishingComment(true); await publishComment(selectedRide!.id, newComment.trim()); setNewComment(''); fetchComments(selectedRide!.id).then(setComments); setIsPublishingComment(false); }}>Post</button>
+                                </div>
+                              ) : (
+                                <div style={{ color: '#666', fontSize: '12px', textAlign: 'center' }}>Sign in to comment</div>
+                              )}
+                            </>
+                          )}
+                        </div>
                       </div>
                     </div>
-                  ))}
+                  ) : (
+                    <>
+                      {viewMode === 'global' && rides.length === 0 && <div className="ride-stat" style={{ padding: '12px' }}>No public rides found. Be the first!</div>}
+                      {viewMode === 'personal' && myRides.length === 0 && <div className="ride-stat" style={{ padding: '12px' }}>You haven't recorded any rides yet.</div>}
+                      {viewMode === 'scheduled' && scheduledRides.length === 0 && <div className="ride-stat" style={{ padding: '12px' }}>No upcoming group rides scheduled right now.</div>}
+                      {viewMode === 'author' && authorRides.length === 0 && <div className="ride-stat" style={{ padding: '12px' }}>Loading author rides...</div>}
+
+                      {viewMode === 'scheduled' ? (() => {
+                        const nowSeconds = Math.floor(Date.now() / 1000);
+                        const upcomingRides = scheduledRides.filter(r => r.startTime >= nowSeconds).sort((a, b) => a.startTime - b.startTime);
+                        return (
+                          <>
+                            {upcomingRides.map((event) => (
+                              <div className="ride-card" key={event.id} style={{ cursor: 'default' }}>
+                                <img src={event.image || '/bikelLogo.jpg'} alt="Ride Map" style={{ width: '100%', height: '120px', objectFit: 'cover', borderRadius: '8px', marginBottom: '12px' }} />
+                                <div className="ride-header"><div style={{ fontWeight: 'bold', color: '#00ffaa' }}>{event.name}</div></div>
+                                <div style={{ fontSize: '12px', color: '#aaa', marginTop: '4px', marginBottom: '8px' }}>{format(new Date(event.startTime * 1000), "EEEE, MMM d 'at' h:mm a")}{event.timezone ? ` (${event.timezone})` : ""}</div>
+                                <div style={{ fontSize: '13px', marginBottom: '12px', lineHeight: 1.4 }}>{event.description}</div>
+                                <div className="ride-stats" style={{ justifyContent: 'space-between' }}>
+                                  <div className="stat-item" style={{ flex: 1, color: '#888' }}>
+                                    📍 {event.locationStr}
+                                    {event.attendees && event.attendees.length > 0 && <span style={{ marginLeft: '12px', color: '#00ffaa' }}>👤 {event.attendees.length} attending</span>}
+                                  </div>
+                                  {user && (
+                                    <button className="btn btn-surface" style={{ padding: '4px 12px', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px', background: event.attendees?.includes(user.pubkey) ? 'rgba(0,255,170,0.1)' : undefined, color: event.attendees?.includes(user.pubkey) ? '#00ffaa' : undefined, borderColor: event.attendees?.includes(user.pubkey) ? '#00ffaa' : undefined }} onClick={(e) => { e.stopPropagation(); handleRSVP(event); }} disabled={event.attendees?.includes(user.pubkey)}>
+                                      <CheckCircle size={14} /> {event.attendees?.includes(user.pubkey) ? 'Attending' : 'RSVP'}
+                                    </button>
+                                  )}
+                                </div>
+                                <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.3)', marginTop: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                                    <span>Org: <span style={{ cursor: 'pointer', textDecoration: 'underline' }} onClick={(e) => { e.stopPropagation(); loadAuthorProfile(event.pubkey); }}>{profiles[event.hexPubkey || event.pubkey]?.nip05 || profiles[event.hexPubkey || event.pubkey]?.name || `${event.pubkey.substring(0, 10)}...`}</span></span>
+                                    {event.route && event.route.length > 0 && <button className="btn btn-surface" style={{ padding: '2px 8px', fontSize: '11px', background: 'rgba(0,255,170,0.1)', color: '#00ffaa' }} onClick={(e) => { e.stopPropagation(); setSelectedRide({ id: event.id, pubkey: event.pubkey, hexPubkey: event.hexPubkey, time: event.startTime, distance: event.distance || 'GPS Route', duration: event.duration || 'Scheduled', rawDuration: 0, visibility: 'full', route: event.route!, kind: 33301, image: event.image }); }}>🗺️ Map</button>}
+                                  </div>
+                                  <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+                                    {isNWCConnected && <button onClick={async (e) => { e.stopPropagation(); if (zappingEventId) return; if (!window.confirm(`Zap organizer 21 sats?`)) return; setZappingEventId(event.id); try { await zapRideEvent(event.id, event.hexPubkey, event.kind, 21, "Thanks for organizing this ride!"); alert("Successfully sent 21 sats!"); } catch (e: any) { alert("Zap failed: " + (e.message || "Unknown error")); } setZappingEventId(null); }} style={{ background: 'none', border: 'none', color: '#eab308', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px', fontSize: '12px' }}><Zap size={14} fill={zappingEventId === event.id ? "#eab308" : "none"} /> 21</button>}
+                                    <button className="btn btn-primary" style={{ padding: '6px 12px', fontSize: '13px', background: '#00ccff', color: '#000', fontWeight: 'bold' }} onClick={() => setActiveDMUser(event.pubkey)}>Message Organizer</button>
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </>
+                        );
+                      })() : null}
+
+                      {viewMode === 'scheduled' && scheduledRides.length > 0 && (() => {
+                        const nowSeconds = Math.floor(Date.now() / 1000);
+                        const pastRides = scheduledRides.filter(r => r.startTime < nowSeconds).sort((a, b) => b.startTime - a.startTime);
+                        if (pastRides.length === 0) return null;
+                        return (
+                          <div style={{ marginTop: '24px' }}>
+                            <h3 style={{ color: '#888', marginBottom: '16px', fontSize: '14px', textTransform: 'uppercase', letterSpacing: '1px' }}>Past Rides</h3>
+                            {pastRides.map((event) => (
+                              <div className="ride-card" key={event.id} style={{ cursor: 'default', opacity: 0.6 }}>
+                                <img src={event.image || '/bikelLogo.jpg'} alt="Ride Map" style={{ width: '100%', height: '120px', objectFit: 'cover', borderRadius: '8px', marginBottom: '12px', filter: 'grayscale(50%)' }} />
+                                <div className="ride-header"><div style={{ fontWeight: 'bold', color: '#888' }}>{event.name}</div></div>
+                                <div style={{ fontSize: '12px', color: '#666', marginTop: '4px', marginBottom: '8px' }}>{format(new Date(event.startTime * 1000), "EEEE, MMM d 'at' h:mm a")}{event.timezone ? ` (${event.timezone})` : ""}</div>
+                                <div style={{ fontSize: '13px', marginBottom: '12px', lineHeight: 1.4, color: '#888' }}>{event.description}</div>
+                                <div className="ride-stats" style={{ borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                    <div className="stat-item" style={{ color: '#888' }}><Users size={14} className="icon" /> {event.attendees.length} Past Riders</div>
+                                    {event.route && event.route.length > 0 && <button className="stat-item" style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', cursor: 'pointer' }} onClick={(e) => { e.stopPropagation(); setSelectedRide({ id: event.dTag, pubkey: event.hexPubkey, hexPubkey: event.hexPubkey, time: event.startTime, distance: "0", duration: "0", rawDuration: 0, visibility: "full", route: event.route!, kind: 33301 }); }}>🗺️ Map</button>}
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        );
+                      })()}
+
+                      {viewMode !== 'scheduled' && (viewMode === 'personal' ? myRides : viewMode === 'author' ? authorRides : filteredGlobalRides).map((ride) => (
+                        <div className="ride-card" key={ride.id} id={`ride-${ride.id}`} onClick={() => { setSelectedRide(ride); setLastSelectedRideId(ride.id); }}>
+                          <img src={ride.image || ((ride.client?.toLowerCase() === 'runstr' || ride.kind === 1301 || ride.kind === 1) && ride.client?.toLowerCase() !== 'bikel' ? '/runstrLogo.jpg' : '/bikelLogo.jpg')} alt="Ride Map" style={{ width: '100%', height: '120px', objectFit: 'cover', borderRadius: '8px', marginBottom: '12px' }} />
+                          <div className="ride-header">
+                            <div className="ride-pubkey" title={ride.pubkey}>
+                              <div className="avatar-mini"></div>
+                              <div style={{ display: 'flex', flexDirection: 'column' }}>
+                                <span onClick={(e) => { e.stopPropagation(); loadAuthorProfile(ride.pubkey); }} style={{ cursor: 'pointer' }}>{profiles[ride.hexPubkey || ride.pubkey]?.nip05 || profiles[ride.hexPubkey || ride.pubkey]?.name || `${ride.pubkey.substring(0, 10)}...`}</span>
+                                {ride.client && ride.client !== 'bikel' && (
+                                  <span style={{ color: '#00ccff', fontSize: '10px', fontWeight: 'bold' }}>via {ride.client}</span>
+                                )}
+                              </div>
+                            </div>
+                            <div className="ride-time" style={{ textAlign: 'right' }}>
+                              <div>{formatDistanceToNow(ride.time * 1000, { addSuffix: true })}</div>
+                              <span style={{ fontSize: '9px', padding: '1px 4px', borderRadius: '3px', background: ride.route.length > 0 ? 'rgba(0,255,170,0.1)' : 'rgba(0,204,255,0.1)', color: ride.route.length > 0 ? '#00ffaa' : '#00ccff', fontWeight: 'bold', display: 'inline-flex', alignItems: 'center', gap: '3px', marginTop: '4px' }}>
+                                {ride.route.length > 0 ? <><Route size={8} /> GPS</> : <><Database size={8} /> DATA</>}
+                              </span>
+                            </div>
+                          </div>
+                          {ride.title && <div style={{ fontSize: '15px', fontWeight: 'bold', color: '#00ffaa', marginBottom: '4px' }}>{ride.title}</div>}
+                          {ride.description && <div style={{ fontSize: '13px', color: '#ddd', marginBottom: '12px', lineHeight: 1.4 }}>{ride.description}</div>}
+                          <div className="ride-stats-container">
+                            <div className="ride-stats">
+                              <div className="stat-item"><Route size={16} className="icon" style={{ color: '#00ffaa' }} /> {ride.distance} mi</div>
+                              <div className="stat-item"><Clock size={16} className="icon" style={{ color: '#00ffaa' }} /> {ride.duration}</div>
+                              {ride.rawDuration > 0 && parseFloat(ride.distance) > 0 && (
+                                <div className="stat-item"><Gauge size={16} className="icon" style={{ color: '#00ccff' }} /> {(parseFloat(ride.distance) / (ride.rawDuration / 3600)).toFixed(1)} mph</div>
+                              )}
+                              {ride.elevation && <div className="stat-item"><ChevronUp size={16} className="icon" style={{ color: '#00ffaa' }} /> {ride.elevation} ft</div>}
+                            </div>
+                            <div className="stat-meta">
+                              {ride.confidence !== undefined && (
+                                <div className="stat-meta-item" style={{ color: ride.confidence >= 0.7 ? '#00ffaa' : '#ff4d4f' }}>
+                                  ●  {(ride.confidence * 100).toFixed(0)}% Confidence
+                                </div>
+                              )}
+                              <div className="stat-meta-item" style={{ marginLeft: 'auto', display: 'flex', gap: '8px', alignItems: 'center' }}>
+                                <span style={{ opacity: 0.6 }}>{ride.client || 'Bikel'}</span>
+                                {isNWCConnected && viewMode !== 'personal' && (
+                                  <button onClick={async (e) => { e.stopPropagation(); if (zappingEventId) return; if (!window.confirm(`Zap rider 21 sats?`)) return; setZappingEventId(ride.id); try { await zapRideEvent(ride.id, ride.hexPubkey, ride.kind, 21, "Great ride!"); alert("Successfully sent 21 sats!"); } catch (e: any) { alert("Zap failed: " + (e.message || "Unknown error")); } setZappingEventId(null); }} className="btn btn-surface" style={{ padding: '2px 8px', color: '#eab308', borderRadius: '12px', fontSize: '11px', border: '1px solid rgba(234,179,8,0.3)' }}>
+                                    <Zap size={11} fill={zappingEventId === ride.id ? "#eab308" : "none"} /> 21
+                                  </button>
+                                )}
+                                {viewMode === 'personal' && user && ride.hexPubkey === user.pubkey && (
+                                  <button
+                                    onClick={async (e) => { e.stopPropagation(); if (window.confirm("Delete this ride?")) await handleDeleteRide(ride.id); }}
+                                    disabled={deletingRideId === ride.id}
+                                    style={{ background: 'none', border: 'none', color: '#ff4d4f', cursor: 'pointer', padding: '2px', display: 'flex', alignItems: 'center', opacity: 0.8 }}
+                                    title="Delete this ride"
+                                  >
+                                    <Trash2 size={13} />
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </>
+                  )}
                 </div>
               </div>
             </>
@@ -621,12 +731,12 @@ function App() {
               const startCoords: [number, number] = [ride.route[0][0], ride.route[0][1]];
               const { color: rideColor, opacity: rideOpacity } = rideAgeColor(ride.time);
               return (
-                <div key={ride.id}>
+                <LayerGroup key={ride.id}>
                   <CircleMarker center={startCoords} radius={5} pathOptions={{ color: rideColor, fillColor: rideColor, fillOpacity: rideOpacity + 0.1, weight: 2 }} eventHandlers={{ click: () => setSelectedRide(ride) }}>
                     <Popup><div style={{ color: '#000', fontSize: '13px' }}><strong>{ride.pubkey.substring(0, 12)}...</strong><br />{ride.distance} mi in {ride.duration}</div></Popup>
                   </CircleMarker>
                   <Polyline positions={ride.route as [number, number][]} pathOptions={{ color: rideColor, weight: 3, opacity: rideOpacity }} eventHandlers={{ click: () => setSelectedRide(ride) }} />
-                </div>
+                </LayerGroup>
               );
             })}
             {showHeatmap && heatmapCells.map((cell, i) => (
@@ -634,109 +744,25 @@ function App() {
                 <Popup><div style={{ color: '#000', fontSize: '12px' }}><strong>{cell.count} passes</strong><br />{cell.riders.size} unique rider{cell.riders.size !== 1 ? 's' : ''}</div></Popup>
               </CircleMarker>
             ))}
+
+            {selectedRide && selectedRide.route.length > 0 && (
+              <>
+                <Polyline positions={selectedRide.route as [number, number][]} pathOptions={{ color: '#00ccff', weight: 6, opacity: 1, lineJoin: 'round', zIndex: 1000 }} />
+                <CircleMarker center={[selectedRide.route[0][0], selectedRide.route[0][1]]} radius={8} pathOptions={{ color: '#00ffaa', fillOpacity: 1, weight: 3, fillColor: '#000' }}>
+                  <Popup><div style={{ color: '#000' }}>Start</div></Popup>
+                </CircleMarker>
+                <CircleMarker center={[selectedRide.route[selectedRide.route.length - 1][0], selectedRide.route[selectedRide.route.length - 1][1]]} radius={8} pathOptions={{ color: '#ff4d4f', fillOpacity: 1, weight: 3, fillColor: '#000' }}>
+                  <Popup><div style={{ color: '#000' }}>End</div></Popup>
+                </CircleMarker>
+                <SetMapBounds route={selectedRide.route} />
+              </>
+            )}
             <MapFocusHandler focus={mapFocus} />
           </MapContainer>
         </section>
       </main>
 
-      {/* Ride Detail Modal */}
-      {selectedRide && (
-        <div className="modal-overlay">
-          <div className="modal-content animate-fade-in glass-panel" style={{ width: '90%', maxWidth: '900px', height: '90vh', display: 'flex', flexDirection: 'column' }}>
-            <div className="modal-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '20px', borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
-              <div>
-                <h2 style={{ margin: 0, color: '#00ffaa' }}>Ride Details</h2>
-                <div style={{ color: '#888', fontSize: '14px', marginTop: '4px' }}>
-                  {formatDistanceToNow(selectedRide.time * 1000, { addSuffix: true })} {' by '}
-                  <span style={{ color: '#00ffaa', cursor: 'pointer', marginLeft: '4px', textDecoration: 'underline' }} onClick={() => loadAuthorProfile(selectedRide.pubkey)}>
-                    {profiles[selectedRide.hexPubkey || selectedRide.pubkey]?.nip05 || profiles[selectedRide.hexPubkey || selectedRide.pubkey]?.name || `${selectedRide.pubkey.substring(0, 16)}...`}
-                  </span>
-                  {selectedRide.client && selectedRide.client !== 'bikel' && (
-                    <span style={{ color: '#00ccff', fontSize: '12px', fontWeight: 'bold', marginLeft: '8px' }}>via {selectedRide.client}</span>
-                  )}
-                </div>
-              </div>
-              <button onClick={() => setSelectedRide(null)} className="btn btn-surface" style={{ padding: '8px' }}><X size={24} /></button>
-            </div>
-            {selectedRide.image && selectedRide.image !== 'https://bikel.ink/bikelLogo.jpg' && selectedRide.image !== '/bikelLogo.jpg' && (
-              <div style={{ padding: '20px 20px 0' }}><img src={selectedRide.image} alt="Ride Media" style={{ width: '100%', height: '120px', objectFit: 'cover', borderRadius: '8px' }} /></div>
-            )}
-            <div className="modal-stats" style={{ display: 'flex', padding: '20px', gap: '40px', background: 'rgba(0,0,0,0.3)' }}>
-              <div className="stat-box"><div className="stat-value">{selectedRide.distance}</div><div className="stat-label">MILES</div></div>
-              <div className="stat-box"><div className="stat-value">{selectedRide.duration}</div><div className="stat-label">TIME</div></div>
-              {selectedRide.elevation && <div className="stat-box"><div className="stat-value">{selectedRide.elevation}</div><div className="stat-label">ELEVATION (FT)</div></div>}
-            </div>
-            <div className="modal-map" style={{ flex: 1, position: 'relative' }}>
-              {selectedRide.route.length > 0 ? (
-                <MapContainer center={[selectedRide.route[0][0], selectedRide.route[0][1]]} zoom={14} style={{ height: '100%', width: '100%' }}>
-                  <TileLayer url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png" />
-                  <Polyline positions={selectedRide.route as [number, number][]} pathOptions={{ color: '#00ffaa', weight: 4, opacity: 0.8 }} />
-                  <CircleMarker center={[selectedRide.route[0][0], selectedRide.route[0][1]]} radius={6} pathOptions={{ color: '#00ffaa', fillOpacity: 1 }} />
-                  <CircleMarker center={[selectedRide.route[selectedRide.route.length - 1][0], selectedRide.route[selectedRide.route.length - 1][1]]} radius={6} pathOptions={{ color: '#ff4d4f', fillOpacity: 1 }} />
-                  <SetMapBounds route={selectedRide.route} />
-                </MapContainer>
-              ) : (
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#888' }}>No route data published for this ride.</div>
-              )}
-            </div>
-            <div className="modal-comments" style={{ padding: '20px', background: 'rgba(255,255,255,0.02)', borderTop: '1px solid rgba(255,255,255,0.1)' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer', margin: isDiscussionExpanded ? '0 0 16px' : '0' }} onClick={() => setIsDiscussionExpanded(!isDiscussionExpanded)}>
-                <h3 style={{ margin: 0, color: '#fff', fontSize: '16px' }}>Discussion ({comments.length})</h3>
-                {isDiscussionExpanded ? <ChevronDown size={20} color="#fff" /> : <ChevronUp size={20} color="#fff" />}
-              </div>
-              {isDiscussionExpanded && (
-                <>
-                  <div style={{ maxHeight: '180px', overflowY: 'auto', marginBottom: '16px', display: 'flex', flexDirection: 'column', gap: '12px', paddingRight: '8px' }}>
-                    {comments.length === 0 ? <div style={{ color: '#666', fontSize: '14px', fontStyle: 'italic' }}>No comments yet. Be the first!</div> : comments.map(c => (
-                      <div key={c.id} style={{ background: 'rgba(0,0,0,0.3)', padding: '12px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.05)' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
-                          <span style={{ color: '#00ffaa', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer', textDecoration: 'underline' }} onClick={(e) => { e.stopPropagation(); loadAuthorProfile(c.pubkey); }}>{profiles[c.hexPubkey || c.pubkey]?.nip05 || profiles[c.hexPubkey || c.pubkey]?.name || `${c.pubkey.substring(0, 10)}...`}</span>
-                          <span style={{ color: '#888', fontSize: '12px' }}>{formatDistanceToNow(c.createdAt * 1000, { addSuffix: true })}</span>
-                        </div>
-                        <div style={{ color: '#eee', fontSize: '14px', lineHeight: '1.4' }}>{c.content}</div>
-                      </div>
-                    ))}
-                  </div>
-                  {user ? (
-                    <div style={{ display: 'flex', gap: '12px' }}>
-                      <input type="text" value={newComment} onChange={(e) => setNewComment(e.target.value)} placeholder="Write a comment..." disabled={isPublishingComment} style={{ flex: 1, padding: '12px', borderRadius: '8px', background: 'rgba(255,255,255,0.1)', border: '1px solid rgba(255,255,255,0.2)', color: '#fff' }} onKeyDown={async (e) => { if (e.key === 'Enter' && !isPublishingComment && newComment.trim() && selectedRide) { setIsPublishingComment(true); const success = await publishComment(selectedRide.id, newComment.trim()); if (success) { setNewComment(''); fetchComments(selectedRide.id).then(setComments); } else { alert("Failed to publish comment."); } setIsPublishingComment(false); } }} />
-                      <button className="btn btn-primary" disabled={isPublishingComment || !newComment.trim()} onClick={async () => { if (!newComment.trim() || !selectedRide) return; setIsPublishingComment(true); const success = await publishComment(selectedRide.id, newComment.trim()); if (success) { setNewComment(''); fetchComments(selectedRide.id).then(setComments); } else { alert("Failed to publish comment."); } setIsPublishingComment(false); }}>{isPublishingComment ? 'Posting...' : 'Post'}</button>
-                    </div>
-                  ) : (
-                    <div style={{ color: '#888', fontSize: '14px', textAlign: 'center' }}>Please <a href="#" onClick={(e) => { e.preventDefault(); loginNip07().then(setUser); }} style={{ color: '#00ffaa', textDecoration: 'underline' }}>sign in</a> to join the discussion.</div>
-                  )}
-                </>
-              )}
-            </div>
-            {/* Note ID Footer */}
-            {(() => {
-              const nevent = (() => { try { return nip19.neventEncode({ id: selectedRide.id, author: selectedRide.hexPubkey }); } catch { return null; } })();
-              if (!nevent) return null;
-              const short = `${nevent.substring(0, 16)}...${nevent.slice(-8)}`;
-              const isCopied = copiedEventId === selectedRide.id;
-              return (
-                <div style={{ padding: '10px 20px', borderTop: '1px solid rgba(255,255,255,0.05)', display: 'flex', alignItems: 'center', gap: '10px', background: 'rgba(0,0,0,0.2)' }}>
-                  <span style={{ color: '#444', fontSize: '11px', fontFamily: 'monospace', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{short}</span>
-                  <button
-                    onClick={() => { navigator.clipboard.writeText(nevent); setCopiedEventId(selectedRide.id); setTimeout(() => setCopiedEventId(null), 2000); }}
-                    style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '6px', padding: '4px 10px', color: isCopied ? '#00ffaa' : '#888', fontSize: '11px', cursor: 'pointer', whiteSpace: 'nowrap', transition: 'color 0.2s' }}
-                  >
-                    {isCopied ? '✓ Copied' : '📋 Copy nevent'}
-                  </button>
-                  <a
-                    href={`https://njump.me/${nevent}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    style={{ background: 'rgba(0,255,170,0.08)', border: '1px solid rgba(0,255,170,0.2)', borderRadius: '6px', padding: '4px 10px', color: '#00ffaa', fontSize: '11px', textDecoration: 'none', whiteSpace: 'nowrap' }}
-                  >
-                    njump ↗
-                  </a>
-                </div>
-              );
-            })()}
-          </div>
-        </div>
-      )}
+      {/* Ride Detail Modal REMOVED - integrated into sidebar */}
       {activeDMUser && (
         <div className="modal-overlay">
           <div className="modal-content animate-fade-in glass-panel" style={{ width: '90%', maxWidth: '500px', display: 'flex', flexDirection: 'column' }}>

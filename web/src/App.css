@@ -165,21 +165,34 @@
 }
 
 .ride-stats {
-  display: flex;
-  gap: 16px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
   margin-top: 12px;
+  padding: 12px;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 8px;
 }
 
 .stat-item {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   font-size: 0.85rem;
-  color: var(--text-primary);
+  color: #fff;
 }
 
-.stat-item .icon {
-  color: var(--accent-primary);
+.stat-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 8px;
+  padding: 0 4px;
+}
+
+.stat-meta-item {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
 }
 
 /* Connection status */
@@ -234,6 +247,48 @@
 
 .modal-map .leaflet-container {
   background: #0d0f12;
+}
+
+/* Ride Detail View */
+.ride-detail-view {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.detail-header button {
+  transition: all 0.2s ease;
+}
+
+.detail-header button:hover {
+  background: rgba(255, 255, 255, 0.1);
+  transform: translateX(-2px);
+}
+
+.detail-card {
+  position: relative;
+  overflow: hidden;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+}
+
+.detail-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--accent-primary), transparent);
+  opacity: 0.5;
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.4s ease-out;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 /* --- Mobile Responsiveness --- */

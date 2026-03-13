@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { StyleSheet, Text, View, TouchableOpacity, Dimensions, Platform, ScrollView, TextInput, Alert, KeyboardAvoidingView, ActivityIndicator, Image, RefreshControl, BackHandler, AppState } from 'react-native';
 import * as Location from 'expo-location';
 import { LeafletView, MapLayerType, MapShapeType, WebViewLeafletEvents } from 'react-native-leaflet-view';
-import { Bike, Square, Play, Zap, History, Settings, CalendarPlus, X, MessageSquare, Globe, LocateFixed, Map, Mail, Trash2, RotateCw, ChevronUp } from 'lucide-react-native';
+import { Bike, Square, Play, Zap, History, Settings, CalendarPlus, X, MessageSquare, Globe, LocateFixed, Map, Mail, Trash2, RotateCw, ChevronUp, Route, Clock, Gauge } from 'lucide-react-native';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import * as Clipboard from 'expo-clipboard';
 import * as ImagePicker from 'expo-image-picker';
@@ -1198,29 +1198,30 @@ export default function App() {
             </TouchableOpacity>
           </View>
 
-          <View style={{ flexDirection: 'row', gap: 12, marginBottom: 16 }}>
-            <View style={{ flex: 1, backgroundColor: 'rgba(255,255,255,0.05)', padding: 8, borderRadius: 8, alignItems: 'center' }}>
-              <Text style={{ color: '#fff', fontSize: 14, fontWeight: 'bold' }}>{selectedMapRide.distance} mi</Text>
-              <Text style={{ color: '#888', fontSize: 9 }}>DISTANCE</Text>
+          <View style={{ marginBottom: 16 }}>
+            <View style={{ flexDirection: 'row', gap: 12, marginBottom: 12 }}>
+              <View style={{ flex: 1, backgroundColor: 'rgba(255,255,255,0.05)', padding: 10, borderRadius: 8, alignItems: 'center' }}>
+                <Text style={{ color: '#fff', fontSize: 16, fontWeight: 'bold' }}>{selectedMapRide.distance} mi</Text>
+                <Text style={{ color: '#888', fontSize: 10 }}>DISTANCE</Text>
+              </View>
+              <View style={{ flex: 1, backgroundColor: 'rgba(255,255,255,0.05)', padding: 10, borderRadius: 8, alignItems: 'center' }}>
+                <Text style={{ color: '#fff', fontSize: 16, fontWeight: 'bold' }}>{selectedMapRide.duration}</Text>
+                <Text style={{ color: '#888', fontSize: 10 }}>TIME</Text>
+              </View>
             </View>
-            <View style={{ flex: 1, backgroundColor: 'rgba(255,255,255,0.05)', padding: 8, borderRadius: 8, alignItems: 'center' }}>
-              <Text style={{ color: '#fff', fontSize: 14, fontWeight: 'bold' }}>{selectedMapRide.duration}</Text>
-              <Text style={{ color: '#888', fontSize: 9 }}>TIME</Text>
-            </View>
-            <View style={{ flex: 1, backgroundColor: 'rgba(255,255,255,0.05)', padding: 8, borderRadius: 8, alignItems: 'center' }}>
-              <Text style={{ color: '#fff', fontSize: 14, fontWeight: 'bold' }}>
-                {(() => {
-                  const d = parseFloat(selectedMapRide.distance || '0');
-                  const p = selectedMapRide.duration.match(/(\d+)h\s*(\d+)m|(\d+)m/);
-                  let m = 0;
-                  if (p) {
-                    if (p[1]) m = parseInt(p[1]) * 60 + parseInt(p[2] || '0');
-                    else if (p[3]) m = parseInt(p[3]);
-                  }
-                  return m > 0 ? (d / (m / 60)).toFixed(1) : '0';
-                })()}
-              </Text>
-              <Text style={{ color: '#888', fontSize: 9 }}>AVG MPH</Text>
+            <View style={{ flexDirection: 'row', gap: 12 }}>
+              <View style={{ flex: 1, backgroundColor: 'rgba(255,255,255,0.05)', padding: 10, borderRadius: 8, alignItems: 'center' }}>
+                <Text style={{ color: '#00ccff', fontSize: 16, fontWeight: 'bold' }}>
+                  {selectedMapRide.rawDuration > 0 && parseFloat(selectedMapRide.distance) > 0 
+                    ? (parseFloat(selectedMapRide.distance) / (selectedMapRide.rawDuration / 3600)).toFixed(1) 
+                    : '0'}
+                </Text>
+                <Text style={{ color: '#888', fontSize: 10 }}>AVG MPH</Text>
+              </View>
+              <View style={{ flex: 1, backgroundColor: 'rgba(255,255,255,0.05)', padding: 10, borderRadius: 8, alignItems: 'center' }}>
+                <Text style={{ color: '#fff', fontSize: 16, fontWeight: 'bold' }}>{selectedMapRide.elevation || '--'}</Text>
+                <Text style={{ color: '#888', fontSize: 10 }}>ELEVATION (FT)</Text>
+              </View>
             </View>
           </View>
 
@@ -1997,21 +1998,32 @@ export default function App() {
                           <Text style={styles.historyTime}>{r.title || new Date(r.time * 1000).toLocaleDateString()}</Text>
                         </View>
                         {r.description ? <Text style={{ color: '#ccc', fontSize: 13, marginBottom: 12 }}>{r.description}</Text> : null}
-                        <View style={[styles.historyStats, { justifyContent: 'flex-start', gap: 16 }]}>
-                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                            <Text style={styles.historyStat}>{r.distance} mi</Text>
+                        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+                          <View style={{ width: '48%', flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(255,255,255,0.03)', padding: 8, borderRadius: 6 }}>
+                            <Route size={14} color="#00ffaa" />
+                            <Text style={{ color: '#fff', fontSize: 13 }}>{r.distance} mi</Text>
                           </View>
-                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                            <Text style={styles.historyStat}>{r.duration}</Text>
+                          <View style={{ width: '48%', flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(255,255,255,0.03)', padding: 8, borderRadius: 6 }}>
+                            <Clock size={14} color="#00ffaa" />
+                            <Text style={{ color: '#fff', fontSize: 13 }}>{r.duration}</Text>
                           </View>
-                          {r.elevation && (
-                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                              <ChevronUp size={14} color="#00ffaa" />
-                              <Text style={styles.historyStat}>{r.elevation} ft</Text>
+                          {r.rawDuration > 0 && parseFloat(r.distance) > 0 && (
+                            <View style={{ width: '48%', flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(255,255,255,0.03)', padding: 8, borderRadius: 6 }}>
+                              <Gauge size={14} color="#00ccff" />
+                              <Text style={{ color: '#fff', fontSize: 13 }}>{(parseFloat(r.distance) / (r.rawDuration / 3600)).toFixed(1)} mph</Text>
                             </View>
                           )}
+                          {r.elevation && (
+                            <View style={{ width: '48%', flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(255,255,255,0.03)', padding: 8, borderRadius: 6 }}>
+                              <ChevronUp size={14} color="#00ffaa" />
+                              <Text style={{ color: '#fff', fontSize: 13 }}>{r.elevation} ft</Text>
+                            </View>
+                          )}
+                        </View>
+                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 8, paddingHorizontal: 4 }}>
+                          <Text style={{ color: 'rgba(255,255,255,0.4)', fontSize: 11 }}>{r.client || 'Bikel'}</Text>
                           {isNWCConnected && (
-                            <TouchableOpacity disabled={isZapping} style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginLeft: 'auto', backgroundColor: 'rgba(234,179,8,0.1)', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12, borderWidth: 1, borderColor: 'rgba(234,179,8,0.3)' }} onPress={() => {
+                            <TouchableOpacity disabled={isZapping} style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: 'rgba(234,179,8,0.1)', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 12, borderWidth: 1, borderColor: 'rgba(234,179,8,0.3)' }} onPress={() => {
                               Alert.alert('Send Zap', `Zap ${displayName} 21 sats?`, [
                                 { text: 'Cancel', style: 'cancel' },
                                 {
@@ -2285,9 +2297,19 @@ export default function App() {
                     <Text style={{ color: '#888', fontSize: 12 }}>{new Date(r.time * 1000).toLocaleDateString()}</Text>
                   </View>
                   {r.description && <Text style={{ color: '#aaa', fontSize: 12, marginBottom: 8 }}>{r.description}</Text>}
-                  <View style={{ flexDirection: 'row', gap: 12 }}>
-                    <Text style={{ color: '#fff', fontSize: 13 }}>🚴 {r.distance} mi</Text>
-                    <Text style={{ color: '#fff', fontSize: 13 }}>⏱️ {r.duration}</Text>
+                  <View style={{ marginTop: 8, gap: 4 }}>
+                    <View style={{ flexDirection: 'row', gap: 12 }}>
+                      <Text style={{ color: '#fff', fontSize: 13 }}>🚴 {r.distance} mi</Text>
+                      <Text style={{ color: '#fff', fontSize: 13 }}>⏱️ {r.duration}</Text>
+                    </View>
+                    <View style={{ flexDirection: 'row', gap: 12 }}>
+                      {r.rawDuration > 0 && parseFloat(r.distance) > 0 && (
+                        <Text style={{ color: '#00ccff', fontSize: 13 }}>💨 {(parseFloat(r.distance) / (r.rawDuration / 3600)).toFixed(1)} mph</Text>
+                      )}
+                      {r.elevation && (
+                        <Text style={{ color: '#fff', fontSize: 13 }}>⛰️ {r.elevation} ft</Text>
+                      )}
+                    </View>
                   </View>
                 </View>
               ))}
