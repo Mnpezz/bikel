@@ -3,7 +3,6 @@ import { MapContainer, TileLayer, CircleMarker, Popup, Polyline, useMap, LayerGr
 import { Bike, Activity, CalendarPlus, Zap, LogIn, Info, HelpCircle, Smartphone, X, Clock, Route, CheckCircle, RefreshCw, Map as MapIcon, ChevronUp, ChevronDown, Users, Database, Download, BarChart2, Trash2, Gauge, ArrowLeft } from 'lucide-react';
 import { formatDistanceToNow, format } from 'date-fns';
 import { connectNDK, fetchRecentRides, fetchUserRides, fetchScheduledRides, loginNip07, publishRSVP, connectNWC, zapRideEvent, fetchComments, publishComment, fetchDMs, sendDM, deleteRide } from './lib/nostr';
-import { nip19 } from 'nostr-tools';
 import type { RideEvent, ScheduledRideEvent, RideComment, DMessage } from './lib/nostr';
 import type { NDKUser } from '@nostr-dev-kit/ndk';
 import './App.css';
@@ -98,7 +97,6 @@ function App() {
 
   const [comments, setComments] = useState<RideComment[]>([]);
   const [newComment, setNewComment] = useState('');
-  const [isPublishingComment, setIsPublishingComment] = useState(false);
   const [mapFocus, setMapFocus] = useState<[number, number] | null>(null);
   const [isDiscussionExpanded, setIsDiscussionExpanded] = useState(false);
 
@@ -110,7 +108,6 @@ function App() {
   // Data panel
   const [showHeatmap, setShowHeatmap] = useState(false);
   const [deletingRideId, setDeletingRideId] = useState<string | null>(null);
-  const [copiedEventId, setCopiedEventId] = useState<string | null>(null);
 
   // Confidence-filtered global feed (>= 0.7, or no confidence tag = include)
   const filteredGlobalRides = useMemo(() => rides.filter(r => r.confidence === undefined || r.confidence >= 0.7), [rides]);
@@ -575,8 +572,8 @@ function App() {
                               </div>
                               {user ? (
                                 <div style={{ display: 'flex', gap: '8px' }}>
-                                  <input type="text" value={newComment} onChange={(e) => setNewComment(e.target.value)} placeholder="Say something..." style={{ flex: 1, padding: '8px 12px', fontSize: '13px', borderRadius: '6px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', color: '#fff' }} onKeyDown={async (e) => { if (e.key === 'Enter' && newComment.trim()) { setIsPublishingComment(true); await publishComment(selectedRide!.id, newComment.trim()); setNewComment(''); fetchComments(selectedRide!.id).then(setComments); setIsPublishingComment(false); } }} />
-                                  <button className="btn btn-primary" style={{ padding: '6px 12px', fontSize: '13px' }} onClick={async () => { setIsPublishingComment(true); await publishComment(selectedRide!.id, newComment.trim()); setNewComment(''); fetchComments(selectedRide!.id).then(setComments); setIsPublishingComment(false); }}>Post</button>
+                                  <input type="text" value={newComment} onChange={(e) => setNewComment(e.target.value)} placeholder="Say something..." style={{ flex: 1, padding: '8px 12px', fontSize: '13px', borderRadius: '6px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', color: '#fff' }} onKeyDown={async (e) => { if (e.key === 'Enter' && newComment.trim()) { await publishComment(selectedRide!.id, newComment.trim()); setNewComment(''); fetchComments(selectedRide!.id).then(setComments); } }} />
+                                  <button className="btn btn-primary" style={{ padding: '6px 12px', fontSize: '13px' }} onClick={async () => { await publishComment(selectedRide!.id, newComment.trim()); setNewComment(''); fetchComments(selectedRide!.id).then(setComments); }}>Post</button>
                                 </div>
                               ) : (
                                 <div style={{ color: '#666', fontSize: '12px', textAlign: 'center' }}>Sign in to comment</div>
@@ -747,7 +744,7 @@ function App() {
 
             {selectedRide && selectedRide.route.length > 0 && (
               <>
-                <Polyline positions={selectedRide.route as [number, number][]} pathOptions={{ color: '#00ccff', weight: 6, opacity: 1, lineJoin: 'round', zIndex: 1000 }} />
+                <Polyline positions={selectedRide.route as [number, number][]} pathOptions={{ color: '#00ccff', weight: 6, opacity: 1, lineJoin: 'round' }} />
                 <CircleMarker center={[selectedRide.route[0][0], selectedRide.route[0][1]]} radius={8} pathOptions={{ color: '#00ffaa', fillOpacity: 1, weight: 3, fillColor: '#000' }}>
                   <Popup><div style={{ color: '#000' }}>Start</div></Popup>
                 </CircleMarker>

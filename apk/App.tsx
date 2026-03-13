@@ -706,17 +706,8 @@ export default function App() {
       size: [32, 32]
     }] : [];
 
-    filteredGlobalRides.forEach(ride => {
-      markers.push({
-        id: `ride_${ride.id}`,
-        position: { lat: ride.route[0][0], lng: ride.route[0][1] },
-        icon: '📍',
-        size: [24, 24],
-      });
-    });
-
     return markers;
-  }, [location, filteredGlobalRides]);
+  }, [location]);
 
   const mapShapes = useMemo(() => {
     const shapes: any[] = [];
@@ -724,6 +715,7 @@ export default function App() {
     // 1. Draw all global rides first (bottom layers)
     filteredGlobalRides.forEach(ride => {
       const { color, opacity } = rideAgeColor(ride.time);
+      // Main polyline
       shapes.push({
         id: `ride_${ride.id}`,
         shapeType: MapShapeType.POLYLINE,
@@ -732,6 +724,15 @@ export default function App() {
         width: 3,
         opacity: opacity,
       });
+
+      // Small start circle for visibility (Web style)
+      shapes.push({
+        id: `ride_start_v_${ride.id}`,
+        shapeType: MapShapeType.CIRCLE_MARKER,
+        center: { lat: ride.route[0][0], lng: ride.route[0][1] },
+        color: color,
+        radius: 3,
+      });
     });
 
     // 2. Draw the highlighted route last (top layer)
@@ -739,9 +740,27 @@ export default function App() {
       shapes.push({
         shapeType: MapShapeType.POLYLINE,
         positions: selectedRoute,
-        color: "#ff3300", // Brighter Red-Orange
-        width: 8, // Thicker
+        color: "#00ccff", // Cyan to match web
+        width: 8,
         opacity: 1.0,
+      });
+
+      // Start circle (web style)
+      shapes.push({
+        id: 'selected_start_m',
+        shapeType: MapShapeType.CIRCLE_MARKER,
+        center: selectedRoute[0],
+        color: "#00ffaa",
+        radius: 6,
+      });
+
+      // End circle (web style)
+      shapes.push({
+        id: 'selected_end_m',
+        shapeType: MapShapeType.CIRCLE_MARKER,
+        center: selectedRoute[selectedRoute.length - 1],
+        color: "#ff4d4f",
+        radius: 6,
       });
     }
 
