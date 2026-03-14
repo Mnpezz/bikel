@@ -1725,9 +1725,25 @@ export default function App() {
                           {startDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · auto-detected
                           {draft.speedSpikes > 0 ? ` · ${draft.speedSpikes} speed spike${draft.speedSpikes > 1 ? 's' : ''} detected` : ''}
                         </Text>
-                        <View style={{ flexDirection: 'row', gap: 16, marginBottom: 14 }}>
-                          <Text style={{ color: '#fff', fontSize: 14 }}>🚴 {draft.distance.toFixed(1)} mi</Text>
-                          <Text style={{ color: '#fff', fontSize: 14 }}>⏱️ {formatDuration(draft.durationSeconds)}</Text>
+                        <View style={{ flexDirection: 'row', gap: 8, marginBottom: 12 }}>
+                          <View style={{ flex: 1, backgroundColor: 'rgba(0,255,170,0.06)', padding: 10, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(0,255,170,0.12)' }}>
+                            <Text style={{ color: '#00ffaa', fontSize: 13, fontWeight: 'bold', textAlign: 'center' }}>{draft.distance.toFixed(1)}</Text>
+                            <Text style={{ color: '#9ba1a6', fontSize: 10, marginTop: 2, textAlign: 'center' }}>MILES</Text>
+                          </View>
+                          <View style={{ flex: 1.3, backgroundColor: 'rgba(255,255,255,0.04)', padding: 10, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.06)' }}>
+                            <Text style={{ color: '#fff', fontSize: 13, fontWeight: 'bold', textAlign: 'center' }}>{formatDuration(draft.durationSeconds)}</Text>
+                            <Text style={{ color: '#9ba1a6', fontSize: 10, marginTop: 2, textAlign: 'center' }}>TIME</Text>
+                          </View>
+                          <View style={{ flex: 1, backgroundColor: 'rgba(255,255,255,0.04)', padding: 10, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.06)' }}>
+                            <Text style={{ color: '#fff', fontSize: 13, fontWeight: 'bold', textAlign: 'center' }}>{draft.elevationGain || '0'}</Text>
+                            <Text style={{ color: '#9ba1a6', fontSize: 10, marginTop: 2, textAlign: 'center' }}>GAIN (FT)</Text>
+                          </View>
+                          <View style={{ flex: 1, backgroundColor: 'rgba(255,255,255,0.04)', padding: 10, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.06)' }}>
+                            <Text style={{ color: '#fff', fontSize: 13, fontWeight: 'bold', textAlign: 'center' }}>
+                              {draft.durationSeconds > 0 ? (draft.distance / (draft.durationSeconds / 3600)).toFixed(1) : '0.0'}
+                            </Text>
+                            <Text style={{ color: '#9ba1a6', fontSize: 10, marginTop: 2, textAlign: 'center' }}>MPH AVG</Text>
+                          </View>
                         </View>
                         {draft.route.length > 0 && (
                           <TouchableOpacity

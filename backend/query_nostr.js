@@ -81,14 +81,19 @@ async function run() {
         const aTag = `33401:${contest.pubkey}:${dTag}`;
         console.log(`Looking for RSVPs with a-tag: ${aTag}`);
         const rsvps = await fetchWithTimeout({ kinds: [31925], '#a': [aTag] }, 30000);
-        console.log(`Participants found: ${rsvps.size}`);
+        const rawRsvps = Array.from(rsvps);
+        console.log(`Participants found (any status): ${rawRsvps.length}`);
+        for (const r of rawRsvps) {
+            const lTags = r.getMatchingTags('l');
+            const status = lTags[0]?.[1] ?? '(none)';
+            console.log(`  - RSVP from ${r.pubkey.substring(0, 8)}... status: ${status}, created_at: ${r.created_at}`);
+        }
 
-        const participantPubkeys = Array.from(rsvps)
+        const participantPubkeys = rawRsvps
             .filter(r => r.getMatchingTags('l').some(t => t[1] === 'accepted'))
             .map(r => r.pubkey);
-        for (const p of participantPubkeys) {
-            console.log(`  - Participant: ${p.substring(0, 8)}... (accepted)`);
-        }
+        
+        console.log(`\nFiltered participants (accepted): ${participantPubkeys.length}`);
 
         if (participantPubkeys.length > 0) {
             console.log(`\nFetching rides for these participants...`);
