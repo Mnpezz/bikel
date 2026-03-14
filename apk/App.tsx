@@ -7,7 +7,7 @@ import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/dat
 import * as Clipboard from 'expo-clipboard';
 import * as ImagePicker from 'expo-image-picker';
 import * as Notifications from 'expo-notifications';
-import { connectNDK, publishRide, fetchMyRides, fetchUserRides, getPrivateKeyNsec, getPublicKeyNpub, getPublicKeyHex, setPrivateKey, publishScheduledRide, publishContestEvent, fetchContests, fetchRecentRides, fetchScheduledRides, deleteRideEvent, publishRSVP, connectNWC, zapRideEvent, fetchComments, publishComment, fetchDMs, sendDM, publishProfile, fetchRideLeaderboard, uploadPhoto, ESCROW_PUBKEY, RideEvent, ScheduledRideEvent, ContestEvent, RideComment, DMessage } from './src/lib/nostr';
+import { connectNDK, publishRide, fetchMyRides, fetchUserRides, getPrivateKeyNsec, getPublicKeyNpub, getPublicKeyHex, setPrivateKey, publishScheduledRide, publishContestEvent, fetchContests, fetchRecentRides, fetchScheduledRides, deleteRideEvent, publishRSVP, connectNWC, zapRideEvent, fetchComments, publishComment, fetchDMs, sendDM, publishProfile, fetchRideLeaderboard, fetchProfiles, uploadPhoto, ESCROW_PUBKEY, RideEvent, ScheduledRideEvent, ContestEvent, RideComment, DMessage } from './src/lib/nostr';
 import * as SecureStore from 'expo-secure-store';
 import * as TaskManager from 'expo-task-manager';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -789,18 +789,13 @@ export default function App() {
     const missingKeys = [...new Set(pubkeys)].filter(pk => !profiles[pk]);
     if (missingKeys.length === 0) return;
     try {
-      const ndk = await connectNDK();
-      const filter = { kinds: [0 as any], authors: missingKeys };
-      const metadataEvents = await ndk.fetchEvents(filter);
-      const newProfiles: Record<string, any> = {};
-      for (const ev of metadataEvents) {
-        try { newProfiles[ev.pubkey] = JSON.parse(ev.content); } catch (e) { }
-      }
+      const newProfiles = await fetchProfiles(missingKeys);
       setProfiles(prev => ({ ...prev, ...newProfiles }));
     } catch (e) {
       console.error("Failed to load author profiles", e);
     }
   };
+
 
   const loadFeeds = async (retryNum = 0) => {
     setIsFeedLoading(true);

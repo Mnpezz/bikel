@@ -5,10 +5,10 @@
     "version": "1.0.0",
     "newArchEnabled": false,
     "orientation": "portrait",
-    "icon": "./assets/bikelLogo.jpg",
+    "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "splash": {
-      "image": "./assets/bikelLogo.jpg",
+      "image": "./assets/icon.png",
       "resizeMode": "contain",
       "backgroundColor": "#ffffff"
     },
@@ -28,7 +28,7 @@
       "package": "com.bikel.app",
       "adaptiveIcon": {
         "backgroundColor": "#000000",
-        "foregroundImage": "./assets/bikelLogo.jpg",
+        "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },

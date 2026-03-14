@@ -518,7 +518,7 @@ export async function fetchMyRides(): Promise<RideEvent[]> {
     ];
 
     console.log('[Nostr] Fetching personal ride history...');
-    const events = await ndk.fetchEvents(filters);
+    const events = await fetchEventsWithTimeout(ndk, filters, 8000);
     const ridesMap = new Map<string, RideEvent>();
 
     for (const event of events) {
@@ -552,7 +552,7 @@ export async function fetchUserRides(targetPubkey: string): Promise<RideEvent[]>
     ];
 
     console.log(`[Nostr] Fetching rides for user ${hexPubkey.substring(0, 8)}...`);
-    const events = await ndk.fetchEvents(filters);
+    const events = await fetchEventsWithTimeout(ndk, filters, 8000);
     const ridesMap = new Map<string, RideEvent>();
 
     for (const event of events) {
@@ -732,7 +732,7 @@ export async function fetchScheduledRides(): Promise<ScheduledRideEvent[]> {
     }
 
     if (aTagsToFetch.length > 0) {
-        const rsvpEvents = await ndk.fetchEvents({ kinds: [31925 as any], "#a": aTagsToFetch });
+        const rsvpEvents = await fetchEventsWithTimeout(ndk, [{ kinds: [31925 as any], "#a": aTagsToFetch }], 5000);
         for (const rsvp of rsvpEvents) {
             const aTagMatch = rsvp.getMatchingTags("a")[0]?.[1];
             if (aTagMatch && rsvp.getMatchingTags("l")[0]?.[1] === "accepted") {
@@ -926,10 +926,7 @@ export async function fetchContests(): Promise<ContestEvent[]> {
     }
 
     if (aTagsToFetch.length > 0) {
-        const rsvpEvents = await Promise.race([
-            ndk.fetchEvents({ kinds: [31925 as any], "#a": aTagsToFetch }),
-            new Promise<Set<NDKEvent>>((resolve) => setTimeout(() => resolve(new Set()), 3000))
-        ]) as Set<NDKEvent>;
+        const rsvpEvents = await fetchEventsWithTimeout(ndk, [{ kinds: [31925 as any], "#a": aTagsToFetch }], 5000);
         for (const rsvp of rsvpEvents) {
             const aTagMatch = rsvp.getMatchingTags("a")[0]?.[1];
             if (aTagMatch && rsvp.getMatchingTags("l")[0]?.[1] === "accepted") {
@@ -952,10 +949,7 @@ export async function fetchRideLeaderboard(attendees: string[], startTime: numbe
         until: endTime
     }];
     console.log(`[Nostr] Fetching rides for leaderboard... Attendees: ${attendees.length}`);
-    const events = await Promise.race([
-        ndk.fetchEvents(filters),
-        new Promise<Set<NDKEvent>>((resolve) => setTimeout(() => resolve(new Set()), 8000))
-    ]) as Set<NDKEvent>;
+    const events = await fetchEventsWithTimeout(ndk, filters, 8000);
     const scores: Record<string, number> = {};
 
     for (const event of events) {
@@ -992,15 +986,25 @@ export async function fetchComments(eventId: string): Promise<RideComment[]> {
     const ndk = await connectNDK();
     const filter: NDKFilter = { kinds: [1], "#e": [eventId], limit: 100 };
     console.log(`[Nostr - Mobile] Fetching comments for event ${eventId}...`);
-    const events = await Promise.race([
-        ndk.fetchEvents(filter),
-        new Promise<Set<NDKEvent>>((resolve) => setTimeout(() => resolve(new Set()), 5000))
-    ]) as Set<NDKEvent>;
+    const events = await fetchEventsWithTimeout(ndk, [filter], 5000);
     const comments: RideComment[] = [];
     for (const event of events) {
         comments.push({ id: event.id, pubkey: event.author?.npub || event.pubkey, hexPubkey: event.pubkey, content: event.content, createdAt: event.created_at || Math.floor(Date.now() / 1000) });
     }
     return comments.sort((a, b) => a.createdAt - b.createdAt);
+}
+
+export async function fetchProfiles(pubkeys: string[]): Promise<Record<string, any>> {
+    if (pubkeys.length === 0) return {};
+    const ndk = await connectNDK();
+    const filter: NDKFilter = { kinds: [0 as any], authors: pubkeys, limit: pubkeys.length };
+    console.log(`[Nostr] Bulk fetching ${pubkeys.length} profiles...`);
+    const events = await fetchEventsWithTimeout(ndk, [filter], 6000);
+    const profiles: Record<string, any> = {};
+    for (const ev of events) {
+        try { profiles[ev.pubkey] = JSON.parse(ev.content); } catch (e) { }
+    }
+    return profiles;
 }
 
 export async function publishComment(eventId: string, content: string): Promise<boolean> {
@@ -1031,10 +1035,7 @@ export async function fetchDMs(withPubkey: string): Promise<DMessage[]> {
     else { otherUser = ndk.getUser({ pubkey: withPubkey }); }
     const filterSent: NDKFilter = { kinds: [4], authors: [currentUser.pubkey], "#p": [hexPubkey], limit: 50 };
     const filterReceived: NDKFilter = { kinds: [4], authors: [hexPubkey], "#p": [currentUser.pubkey], limit: 50 };
-    const events = await Promise.race([
-        ndk.fetchEvents([filterSent, filterReceived]),
-        new Promise<Set<NDKEvent>>((resolve) => setTimeout(() => resolve(new Set()), 8000))
-    ]) as Set<NDKEvent>;
+    const events = await fetchEventsWithTimeout(ndk, [filterSent, filterReceived], 8000);
     const messages: DMessage[] = [];
     for (const event of events) {
         try {
