@@ -1228,26 +1228,26 @@ export default function App() {
           <View style={{ marginBottom: 16 }}>
             <View style={{ flexDirection: 'row', gap: 12, marginBottom: 12 }}>
               <View style={{ flex: 1, backgroundColor: 'rgba(255,255,255,0.05)', padding: 10, borderRadius: 8, alignItems: 'center' }}>
-                <Text style={{ color: '#fff', fontSize: 14, fontWeight: 'bold' }}>{selectedMapRide.distance} mi</Text>
-                <Text style={{ color: '#888', fontSize: 10 }}>DISTANCE</Text>
+                <Text style={{ color: '#fff', fontSize: 14, fontWeight: 'bold', textAlign: 'center' }}>{selectedMapRide.distance} mi</Text>
+                <Text style={{ color: '#888', fontSize: 10, textAlign: 'center' }}>DISTANCE</Text>
               </View>
               <View style={{ flex: 1.2, backgroundColor: 'rgba(255,255,255,0.05)', padding: 10, borderRadius: 8, alignItems: 'center' }}>
-                <Text style={{ color: '#fff', fontSize: 14, fontWeight: 'bold' }}>{selectedMapRide.duration}</Text>
-                <Text style={{ color: '#888', fontSize: 10 }}>TIME</Text>
+                <Text style={{ color: '#fff', fontSize: 14, fontWeight: 'bold', textAlign: 'center' }}>{selectedMapRide.duration}</Text>
+                <Text style={{ color: '#888', fontSize: 10, textAlign: 'center' }}>TIME</Text>
               </View>
             </View>
             <View style={{ flexDirection: 'row', gap: 12 }}>
               <View style={{ flex: 1, backgroundColor: 'rgba(255,255,255,0.05)', padding: 10, borderRadius: 8, alignItems: 'center' }}>
-                <Text style={{ color: '#00ccff', fontSize: 14, fontWeight: 'bold' }}>
+                <Text style={{ color: '#00ccff', fontSize: 14, fontWeight: 'bold', textAlign: 'center' }}>
                   {selectedMapRide.rawDuration > 0 && parseFloat(selectedMapRide.distance) > 0
                     ? (parseFloat(selectedMapRide.distance) / (selectedMapRide.rawDuration / 3600)).toFixed(1)
                     : '0'}
                 </Text>
-                <Text style={{ color: '#888', fontSize: 10 }}>AVG MPH</Text>
+                <Text style={{ color: '#888', fontSize: 10, textAlign: 'center' }}>AVG MPH</Text>
               </View>
               <View style={{ flex: 1, backgroundColor: 'rgba(255,255,255,0.05)', padding: 10, borderRadius: 8, alignItems: 'center' }}>
-                <Text style={{ color: '#fff', fontSize: 14, fontWeight: 'bold' }}>{selectedMapRide.elevation || '--'}</Text>
-                <Text style={{ color: '#888', fontSize: 10 }}>ELEVATION (FT)</Text>
+                <Text style={{ color: '#fff', fontSize: 14, fontWeight: 'bold', textAlign: 'center' }}>{selectedMapRide.elevation || '--'}</Text>
+                <Text style={{ color: '#888', fontSize: 10, textAlign: 'center' }}>ELEVATION (FT)</Text>
               </View>
             </View>
           </View>
@@ -1523,17 +1523,17 @@ export default function App() {
                     {/* Stats row */}
                     <View style={{ flexDirection: 'row', gap: 8, marginBottom: 12 }}>
                       <View style={{ flex: 1, backgroundColor: 'rgba(0,255,170,0.06)', padding: 10, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(0,255,170,0.12)' }}>
-                        <Text style={{ color: '#00ffaa', fontSize: 13, fontWeight: 'bold' }}>{distNum.toFixed(1)}</Text>
-                        <Text style={{ color: '#9ba1a6', fontSize: 10, marginTop: 2 }}>MILES</Text>
+                        <Text style={{ color: '#00ffaa', fontSize: 13, fontWeight: 'bold', textAlign: 'center' }}>{distNum.toFixed(1)}</Text>
+                        <Text style={{ color: '#9ba1a6', fontSize: 10, marginTop: 2, textAlign: 'center' }}>MILES</Text>
                       </View>
                       <View style={{ flex: 1.3, backgroundColor: 'rgba(255,255,255,0.04)', padding: 10, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.06)' }}>
-                        <Text style={{ color: '#fff', fontSize: 13, fontWeight: 'bold' }}>{r.duration}</Text>
-                        <Text style={{ color: '#9ba1a6', fontSize: 10, marginTop: 2 }}>TIME</Text>
+                        <Text style={{ color: '#fff', fontSize: 13, fontWeight: 'bold', textAlign: 'center' }}>{r.duration}</Text>
+                        <Text style={{ color: '#9ba1a6', fontSize: 10, marginTop: 2, textAlign: 'center' }}>TIME</Text>
                       </View>
                       {r.elevation && (
                         <View style={{ flex: 1, backgroundColor: 'rgba(255,255,255,0.04)', padding: 10, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.06)' }}>
-                          <Text style={{ color: '#fff', fontSize: 13, fontWeight: 'bold' }}>{r.elevation}</Text>
-                          <Text style={{ color: '#9ba1a6', fontSize: 10, marginTop: 2 }}>GAIN (FT)</Text>
+                          <Text style={{ color: '#fff', fontSize: 13, fontWeight: 'bold', textAlign: 'center' }}>{r.elevation}</Text>
+                          <Text style={{ color: '#9ba1a6', fontSize: 10, marginTop: 2, textAlign: 'center' }}>GAIN (FT)</Text>
                         </View>
                       )}
                       {distNum > 0 && r.duration && (() => {
@@ -1555,8 +1555,8 @@ export default function App() {
                         const avgSpeed = totalMins > 0 ? (distNum / (totalMins / 60)).toFixed(1) : null;
                         return avgSpeed ? (
                           <View style={{ flex: 1, backgroundColor: 'rgba(255,255,255,0.04)', padding: 10, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.06)' }}>
-                            <Text style={{ color: '#fff', fontSize: 13, fontWeight: 'bold' }}>{avgSpeed}</Text>
-                            <Text style={{ color: '#9ba1a6', fontSize: 10, marginTop: 2 }}>MPH AVG</Text>
+                            <Text style={{ color: '#fff', fontSize: 13, fontWeight: 'bold', textAlign: 'center' }}>{avgSpeed}</Text>
+                            <Text style={{ color: '#9ba1a6', fontSize: 10, marginTop: 2, textAlign: 'center' }}>MPH AVG</Text>
                           </View>
                         ) : null;
                       })()}

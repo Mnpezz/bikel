@@ -13,7 +13,7 @@ const ndk = new NDK({ explicitRelayUrls: RELAYS });
 // Mirrors the fetchWithTimeout helper from index.js.
 // Raw ndk.fetchEvents() can hang indefinitely on relays like Damus
 // that are slow to send EOSE, so we use a subscription with a timeout instead.
-function fetchWithTimeout(filter, timeoutMs = 10000) {
+function fetchWithTimeout(filter, timeoutMs = 20000) {
     return new Promise((resolve) => {
         const events = new Set();
         const sub = ndk.subscribe(filter, { closeOnEose: true });
@@ -41,7 +41,7 @@ async function run() {
     try {
         await Promise.race([
             ndk.connect(),
-            new Promise((_, reject) => setTimeout(() => reject(new Error("Connect timeout")), 10000))
+            new Promise((_, reject) => setTimeout(() => reject(new Error("Connect timeout")), 30000))
         ]);
     } catch (e) {
         console.warn("[Query] Connect timed out, proceeding with available relays:", e.message);
@@ -80,12 +80,14 @@ async function run() {
         // RSVPs
         const aTag = `33401:${contest.pubkey}:${dTag}`;
         console.log(`Looking for RSVPs with a-tag: ${aTag}`);
-        const rsvps = await fetchWithTimeout({ kinds: [31925], '#a': [aTag] });
+        const rsvps = await fetchWithTimeout({ kinds: [31925], '#a': [aTag] }, 30000);
         console.log(`Participants found: ${rsvps.size}`);
 
-        const participantPubkeys = Array.from(rsvps).map(r => r.pubkey);
+        const participantPubkeys = Array.from(rsvps)
+            .filter(r => r.getMatchingTags('l').some(t => t[1] === 'accepted'))
+            .map(r => r.pubkey);
         for (const p of participantPubkeys) {
-            console.log(`  - Participant: ${p.substring(0, 8)}...`);
+            console.log(`  - Participant: ${p.substring(0, 8)}... (accepted)`);
         }
 
         if (participantPubkeys.length > 0) {

@@ -118,7 +118,7 @@ async function initializeNDK() {
     try {
         await Promise.race([
             ndk.connect(),
-            new Promise((_, reject) => setTimeout(() => reject(new Error('NDK Connect Timeout')), 10000))
+            new Promise((_, reject) => setTimeout(() => reject(new Error('NDK Connect Timeout')), 30000))
         ]);
         console.log('[Bot] Connected to Nostr relays.');
     } catch (e) {
@@ -128,7 +128,7 @@ async function initializeNDK() {
 }
 
 // Subscription-based fetch with timeout to avoid infinite hangs on slow relays
-async function fetchWithTimeout(ndk, filter, timeoutMs = 10000) {
+async function fetchWithTimeout(ndk, filter, timeoutMs = 20000) {
     return new Promise((resolve) => {
         const events = new Set();
         const sub = ndk.subscribe(filter, { closeOnEose: true });
@@ -373,8 +373,13 @@ async function processFinishedContests() {
             if (isFinished && !isGracePeriod && !isTooOld) {
                 return true;
             } else {
-                if (isGracePeriod) console.log(`[Bot]   - "${title}" (${c.id.substring(0, 8)}): Waiting for 1h grace period (ends ${new Date((end + GRACE_PERIOD) * 1000).toISOString()})`);
-                else if (isTooOld) console.log(`[Bot]   - "${title}" (${c.id.substring(0, 8)}): Too old to process (ended ${new Date(end * 1000).toISOString()})`);
+                if (isGracePeriod) {
+                    const remainingMs = (end + GRACE_PERIOD) * 1000 - Date.now();
+                    const remainingMins = Math.ceil(remainingMs / 60000);
+                    console.log(`[Bot]   - "${title}" (${c.id.substring(0, 8)}): Waiting for grace period (${remainingMins}m remaining until ${new Date((end + GRACE_PERIOD) * 1000).toISOString()})`);
+                } else if (isTooOld) {
+                    console.log(`[Bot]   - "${title}" (${c.id.substring(0, 8)}): Too old to process (ended ${new Date(end * 1000).toISOString()})`);
+                }
                 // If not finished yet, we just ignore it here (it's "Upcoming" or "Active")
                 return false;
             }
@@ -411,10 +416,14 @@ async function processFinishedContests() {
                 kinds: [31925],
                 '#a': [`33401:${contest.pubkey}:${dTag}`],
                 limit: 1000
-            }, 10000);
+            }, 30000);
 
             const participantPubkeys = Array.from(rsvps)
-                .filter(r => r.created_at <= endTimestamp)
+                .filter(r => {
+                    const isAccepted = r.getMatchingTags('l').some(t => t[1] === 'accepted');
+                    const isInTime = r.created_at <= endTimestamp;
+                    return isAccepted && isInTime;
+                })
                 .map(r => r.pubkey);
 
             if (participantPubkeys.length === 0) {
