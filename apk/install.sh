@@ -38,7 +38,7 @@ if [ $IS_RELEASE -eq 1 ]; then
     ./gradlew assembleRelease
     BUILD_STAT=$?
     cd ..
-    APK_PATH="android/app/build/outputs/apk/release/app-release.apk"
+    APK_PATH=$(ls -t android/app/build/outputs/apk/release/*.apk | head -n 1)
 else
     echo "🔨 Compiling debug APK via Gradle..."
     cd android
