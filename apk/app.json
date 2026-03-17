@@ -2,7 +2,7 @@
   "expo": {
     "name": "Bikel",
     "slug": "bikel",
-    "version": "1.3.3",
+    "version": "1.3.4",
     "newArchEnabled": false,
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -26,7 +26,7 @@
     },
     "android": {
       "package": "com.bikel.app",
-      "versionCode": 133,
+      "versionCode": 134,
       "adaptiveIcon": {
         "backgroundColor": "#000000",
         "foregroundImage": "./assets/android-icon-foreground.png",

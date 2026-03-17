@@ -422,8 +422,8 @@ export default function App() {
   const [postRidePrivacy, setPostRidePrivacy] = useState<'full' | 'hidden'>('full');
   const [postRideScheduleMode, setPostRideScheduleMode] = useState(false);
   const [trimTails, setTrimTails] = useState(true);
-  const [shareToFeed, setShareToFeed] = useState(true);
-  const [shareToChat, setShareToChat] = useState(true);
+  const [shareToFeed, setShareToFeed] = useState(false);
+  const [shareToChat, setShareToChat] = useState(false);
   const [postRideDate, setPostRideDate] = useState(new Date());
   const [postRideTime, setPostRideTime] = useState(new Date());
   const [postRideLocation, setPostRideLocation] = useState('');
@@ -619,6 +619,9 @@ export default function App() {
     // Connect NDK first, then immediately start fetching feeds in the background.
     // This fires before the slow SecureStore/NWC/GPS awaits so relays have
     // maximum time to respond while the rest of init is happening.
+    // Set currentHex before loadFeeds so ENTERED button reflects reality immediately
+    getPublicKeyHex().then(hex => { if (hex && mounted) setCurrentHex(hex); }).catch(() => { });
+
     connectNDK().then(() => {
       if (mounted) {
         console.log('[NDK] Connected on load.');
@@ -2027,11 +2030,27 @@ export default function App() {
                                 disabled={c.attendees.includes(currentHex)}
                                 onPress={async () => {
                                   if (!isNWCConnected && c.feeSats > 0) { Alert.alert("Wallet Required", "Connect your Lightning Wallet in Settings to pay the entry fee."); return; }
+                                  if (c.feeSats > 0) {
+                                    const confirmed = await new Promise<boolean>(resolve =>
+                                      Alert.alert(
+                                        "Enter Challenge",
+                                        `Zap ${c.feeSats} sats to enter "${c.name}"?`,
+                                        [
+                                          { text: "Cancel", style: "cancel", onPress: () => resolve(false) },
+                                          { text: `⚡ Zap ${c.feeSats} sats`, onPress: () => resolve(true) }
+                                        ]
+                                      )
+                                    );
+                                    if (!confirmed) return;
+                                  }
                                   try {
-                                    if (c.feeSats > 0) { await zapRideEvent(c.id, ESCROW_PUBKEY, c.kind, Math.floor(c.feeSats), "Challenge Entry Fee"); Alert.alert("Payment Verified", `Joined challenge for ${c.feeSats} sats!`); }
+                                    if (c.feeSats > 0) { await zapRideEvent(c.id, ESCROW_PUBKEY, c.kind, Math.floor(c.feeSats), `Bikel Challenge: ${c.id}`); }
                                     const joined = await publishRSVP(c);
-                                    if (joined) { Alert.alert("Success", "You are entered into the challenge!"); setActiveContests(prev => prev.map(contest => contest.id === c.id ? { ...contest, attendees: [...contest.attendees, currentHex] } : contest)); }
-                                  } catch (e: any) { Alert.alert("Error", e.message || "Failed to enter challenge"); }
+                                    if (joined) {
+                                      setActiveContests(prev => prev.map(contest => contest.id === c.id ? { ...contest, attendees: contest.attendees.includes(currentHex) ? contest.attendees : [...contest.attendees, currentHex] } : contest));
+                                      Alert.alert("🏆 Entered!", c.feeSats > 0 ? `${c.feeSats} sats zapped. Good luck!` : "You are entered. Good luck!");
+                                    }
+                                  } catch (e: any) { Alert.alert("Entry Failed", e.message || "Failed to enter challenge"); }
                                 }}
                               >
                                 <Zap size={14} color={c.attendees.includes(currentHex) ? "#eab308" : "#000"} />

@@ -173,6 +173,93 @@ async function payLightningInvoice(invoice) {
 }
 
 // ─────────────────────────────────────────────
+// Coinos payment verification
+// Checks that an incoming payment of the right amount arrived around the
+// time of the RSVP. Uses Coinos GET /payments with start/end query params
+// to narrow the window server-side.
+//
+// Notes on the Coinos API:
+// - Amounts are in SATS (not msats)
+// - Positive amount = incoming, negative = outgoing
+// - No dedicated "memo" field exposed — we match by amount + time window only
+// - start/end query params are Unix timestamps
+//
+// FAILS OPEN: if Coinos is unreachable we accept the RSVP — the app already
+// verified the zap succeeded before publishing the RSVP, so this is a
+// second-layer sanity check, not the primary gate.
+// ─────────────────────────────────────────────
+
+/**
+ * Fetch Coinos incoming payments within a time window.
+ * Uses start/end query params to avoid loading the full payment history.
+ */
+async function fetchCoinosPaymentsInWindow(startTs, endTs) {
+    if (!COINOS_API_KEY) return null; // null = API key missing, fail open
+    try {
+        const response = await axios.get(
+            `${COINOS_API_URL}/payments`,
+            {
+                headers: { 'Authorization': `Bearer ${COINOS_API_KEY}`, 'content-type': 'application/json' },
+                params: { start: startTs, end: endTs, limit: 100 }
+            }
+        );
+        const payments = Array.isArray(response.data) ? response.data : (response.data?.payments || []);
+        return payments;
+    } catch (e) {
+        console.warn('[Bot] Could not fetch Coinos payments:', e.message);
+        return null; // null = fetch failed, fail open
+    }
+}
+
+/**
+ * Verifies that a contest entry fee arrived in the Coinos account.
+ * Matches: incoming payment (amount > 0) with amount >= feeSats
+ * within a ±2 hour window around the RSVP timestamp.
+ *
+ * Fails open if: fee is 0, Coinos API is unavailable, or API key is missing.
+ */
+async function verifyContestPayment(contestId, feeSats, rsvpCreatedAt) {
+    if (feeSats <= 0) return true; // Free contest — no payment needed
+
+    // Wide window: 1 hour before RSVP, 24 hours after (covers delayed NWC payments
+    // and cases where the payment arrived before the RSVP was published)
+    const windowSecs = 3600;
+    const startTs = rsvpCreatedAt - windowSecs;
+    const endTs = rsvpCreatedAt + (windowSecs * 24);
+
+    // Coinos API uses milliseconds — convert from Unix seconds
+    const payments = await fetchCoinosPaymentsInWindow(startTs * 1000, endTs * 1000);
+
+    // Fail open if API unavailable
+    if (payments === null) {
+        console.log(`[Bot]   ⚠️ Coinos API unavailable — cannot verify payment, accepting RSVP (fail open)`);
+        return true;
+    }
+
+    if (payments.length === 0) {
+        console.log(`[Bot]   ⚠️ No Coinos payments found in window [${new Date(startTs * 1000).toISOString()} → ${new Date(endTs * 1000).toISOString()}] — accepting RSVP (fail open)`);
+        return true;
+    }
+
+    // Find an incoming payment of at least feeSats
+    // Coinos amounts are in sats. Positive = incoming, negative = outgoing.
+    const match = payments.find(p => {
+        const amount = typeof p.amount === 'number' ? p.amount : parseInt(p.amount, 10);
+        if (isNaN(amount) || amount <= 0) return false; // outgoing or invalid
+        if (amount < feeSats) return false;
+        return true;
+    });
+
+    if (match) {
+        console.log(`[Bot]   ✅ Payment verified for contest ${contestId.substring(0, 8)}: ${match.amount} sats received`);
+        return true;
+    }
+
+    console.log(`[Bot]   ❌ No incoming payment >= ${feeSats} sats found for contest ${contestId.substring(0, 8)} in window — rejecting RSVP`);
+    return false;
+}
+
+// ─────────────────────────────────────────────
 // Payout helper — fetch lud16, get invoice, pay
 // ─────────────────────────────────────────────
 async function payoutWinner(ndk, pubkey, splitSats) {
@@ -418,13 +505,22 @@ async function processFinishedContests() {
                 limit: 1000
             }, 30000);
 
-            const participantPubkeys = Array.from(rsvps)
-                .filter(r => {
-                    const isAccepted = r.getMatchingTags('l').some(t => t[1] === 'accepted');
-                    const isInTime = r.created_at <= endTimestamp;
-                    return isAccepted && isInTime;
-                })
-                .map(r => r.pubkey);
+            // Verify payments for each RSVP (async — process one at a time)
+            const verifiedRsvps = [];
+            for (const r of Array.from(rsvps)) {
+                const isAccepted = r.getMatchingTags('l').some(t => t[1] === 'accepted');
+                const isInTime = r.created_at <= endTimestamp;
+                if (!isAccepted || !isInTime) continue;
+
+                const paymentOk = await verifyContestPayment(contest.id, feeSats, r.created_at);
+                if (paymentOk) {
+                    verifiedRsvps.push(r);
+                } else {
+                    console.log(`[Bot]   ⚠️ RSVP from ${r.pubkey.substring(0, 8)} rejected — payment not verified.`);
+                }
+            }
+
+            const participantPubkeys = verifiedRsvps.map(r => r.pubkey);
 
             if (participantPubkeys.length === 0) {
                 console.log(`[Bot] No participants found for contest "${contestName}" — skipping.`);
@@ -434,28 +530,47 @@ async function processFinishedContests() {
             console.log(`[Bot] Found ${participantPubkeys.length} participants for "${contestName}": ${participantPubkeys.map(p => p.substring(0, 8)).join(', ')}`);
 
             // ── Rides ─────────────────────────────────────
+            // Add a small buffer after endTimestamp for rides published slightly late
+            const RIDE_FETCH_BUFFER = 3600; // 1 hour buffer after contest end
             const rides = await fetchWithTimeout(ndk, {
                 kinds: [33301, 1301],
                 authors: participantPubkeys,
                 since: startTimestamp,
-                // We remove 'until' here to catch rides published after the endTimestamp 
-                // but that happened during the window (checked by created_at).
-                // Since the bot now runs with a GRACE_PERIOD, this is safer.
+                until: endTimestamp + RIDE_FETCH_BUFFER,
                 limit: 5000
-            }, 30000); // Increased to 30s for relay lag
+            }, 30000);
 
-            console.log(`[Bot] ${rides.size} ride(s) from ${participantPubkeys.length} participant(s).`);
+            // Deduplicate rides by 'd' tag — Bikel dual-publishes every ride as
+            // both kind 33301 and kind 1301. Without dedup the same ride scores twice.
+            // Prefer kind 33301 if both exist; fall back to event id if no d tag.
+            const seenRideKeys = new Map();
+            for (const ride of rides) {
+                const dTag = ride.getMatchingTags('d')[0]?.[1] || ride.id;
+                const existing = seenRideKeys.get(dTag);
+                if (!existing || (ride.kind === 33301 && existing.kind !== 33301)) {
+                    seenRideKeys.set(dTag, ride);
+                }
+            }
+            const dedupedRides = Array.from(seenRideKeys.values());
+            console.log(`[Bot] ${rides.size} ride(s) from ${participantPubkeys.length} participant(s) (${dedupedRides.length} after dedup).`);
 
             // ── Leaderboard ───────────────────────────────
             const leaderboard = new Map();
             const suffix = parameter === 'max_distance' ? 'mi'
                 : parameter === 'max_elevation' ? 'ft'
-                : parameter === 'fastest_mile' ? 'mph'
-                : 'pts';
+                    : parameter === 'fastest_mile' ? 'mph'
+                        : 'pts';
 
-            for (const ride of rides) {
-                const confidence = parseFloat(ride.getMatchingTags('confidence')[0]?.[1] || '0');
+            for (const ride of dedupedRides) {
                 const pubkey = ride.pubkey;
+
+                // Verify ride was created within the contest window
+                if (ride.created_at < startTimestamp || ride.created_at > endTimestamp) {
+                    console.log(`[Bot]   - Ride ${ride.id.substring(0, 8)} by ${pubkey.substring(0, 8)} rejected: outside contest window (${new Date(ride.created_at * 1000).toISOString()})`);
+                    continue;
+                }
+
+                const confidence = parseFloat(ride.getMatchingTags('confidence')[0]?.[1] || '0');
 
                 // Use min_confidence from the challenge event, not a hardcoded value
                 if (confidence < minConfidence) {
@@ -465,7 +580,15 @@ async function processFinishedContests() {
 
                 const distance = parseFloat(ride.getMatchingTags('distance')[0]?.[1] || '0');
                 const elevation = parseFloat(ride.getMatchingTags('elevation')[0]?.[1] || '0');
-                const duration = parseInt(ride.getMatchingTags('duration')[0]?.[1] || '0', 10);
+                // Duration stored as 'HH:MM:SS' string — convert to seconds
+                const durationRaw = ride.getMatchingTags('duration')[0]?.[1] || '0';
+                let duration = 0;
+                if (durationRaw.includes(':')) {
+                    const parts = durationRaw.split(':').map(Number);
+                    duration = (parts[0] || 0) * 3600 + (parts[1] || 0) * 60 + (parts[2] || 0);
+                } else {
+                    duration = parseInt(durationRaw, 10) || 0;
+                }
 
                 if (parameter === 'max_distance') {
                     leaderboard.set(pubkey, (leaderboard.get(pubkey) || 0) + distance);
