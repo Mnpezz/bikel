@@ -435,7 +435,7 @@ async function processFinishedContests() {
 
             // ── Rides ─────────────────────────────────────
             const rides = await fetchWithTimeout(ndk, {
-                kinds: [33301],
+                kinds: [33301, 1301],
                 authors: participantPubkeys,
                 since: startTimestamp,
                 // We remove 'until' here to catch rides published after the endTimestamp 
@@ -533,24 +533,20 @@ async function processFinishedContests() {
             console.log(`[Bot] Challenge ${contest.id.substring(0, 12)}... marked as processed.`);
 
             // ── Results note ──────────────────────────────
-            if (ndk.signer) {
+            if (ndk.signer && topWinners.length > 0) {
                 let summaryText = `🏆 Results are in for: ${contestName}!\n\n`;
 
-                if (topWinners.length === 0) {
-                    summaryText += `No valid rides were recorded for this challenge.\n`;
-                } else {
-                    for (let i = 0; i < topWinners.length; i++) {
-                        const [pubkey, score] = topWinners[i];
-                        const npub = nip19.npubEncode(pubkey);
-                        const place = ['🥇', '🥈', '🥉'][i] ?? `#${i + 1}`;
-                        summaryText += `${place} nostr:${npub} — ${score.toFixed(1)} ${suffix}\n`;
-                    }
+                for (let i = 0; i < topWinners.length; i++) {
+                    const [pubkey, score] = topWinners[i];
+                    const npub = nip19.npubEncode(pubkey);
+                    const place = ['🥇', '🥈', '🥉'][i] ?? `#${i + 1}`;
+                    summaryText += `${place} nostr:${npub} — ${score.toFixed(1)} ${suffix}\n`;
                 }
 
                 if (isSoloContest && feeSats > 0) {
                     summaryText += `\nOnly one rider entered — entry fee fully refunded. ♻️\n`;
                 } else if (totalPrizePoolSats > 0) {
-                    summaryText += `\n⚡ ${totalPrizePoolSats} sats distributed by Bikel Escrow!\n`;
+                    summaryText += `\n⚡ ${totalPrizePoolSats} sats distributed by Bikel Escrow! 🚲\n`;
                 }
 
                 if (noLud16Winners.length > 0) {

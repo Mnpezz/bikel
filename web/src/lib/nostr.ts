@@ -231,7 +231,7 @@ function parseRideEvent(event: NDKEvent): RideEvent | null {
         const mins = durationSecs >= 3600 ? Math.floor((durationSecs % 3600) / 60) : Math.floor(durationSecs / 60);
         const secs = durationSecs % 60;
 
-        const elevation = event.getMatchingTags("elevation")[0]?.[1];
+        const elevation = event.getMatchingTags("elevation")[0]?.[1] || event.getMatchingTags("elevation_gain")[0]?.[1];
 
         let route: number[][] = [];
         if (visibility === 'full') {

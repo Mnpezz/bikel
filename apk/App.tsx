@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { NDKEvent } from '@nostr-dev-kit/ndk';
 import { StyleSheet, Text, View, TouchableOpacity, Dimensions, Platform, ScrollView, TextInput, Alert, KeyboardAvoidingView, ActivityIndicator, Image, RefreshControl, BackHandler, AppState } from 'react-native';
 import * as Location from 'expo-location';
 import { LeafletView, MapLayerType, MapShapeType, WebViewLeafletEvents } from 'react-native-leaflet-view';
@@ -7,7 +8,8 @@ import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/dat
 import * as Clipboard from 'expo-clipboard';
 import * as ImagePicker from 'expo-image-picker';
 import * as Notifications from 'expo-notifications';
-import { connectNDK, publishRide, fetchMyRides, fetchUserRides, getPrivateKeyNsec, getPublicKeyNpub, getPublicKeyHex, setPrivateKey, publishScheduledRide, publishContestEvent, fetchContests, fetchRecentRides, fetchScheduledRides, deleteRideEvent, publishRSVP, connectNWC, zapRideEvent, fetchComments, publishComment, fetchDMs, sendDM, publishProfile, fetchRideLeaderboard, fetchProfiles, uploadPhoto, ESCROW_PUBKEY, RideEvent, ScheduledRideEvent, ContestEvent, RideComment, DMessage } from './src/lib/nostr';
+import { connectNDK, publishRide, publishSocialNote, publishChannelMessage, fetchChannelMessages, fetchAllBikelSocial, fetchMyRides, fetchUserRides, getPrivateKeyNsec, getPublicKeyNpub, getPublicKeyHex, setPrivateKey, publishScheduledRide, publishContestEvent, fetchContests, fetchRecentRides, fetchScheduledRides, deleteRideEvent, publishRSVP, connectNWC, zapRideEvent, fetchComments, publishComment, fetchDMs, sendDM, publishProfile, fetchRideLeaderboard, fetchProfiles, uploadPhoto, fetchRideById, fetchReactions, publishReaction, deleteReaction, ESCROW_PUBKEY, BIKEL_GLOBAL_CHANNEL_ID, RideEvent, ScheduledRideEvent, ContestEvent, RideComment, ReactionSummary, DMessage } from './src/lib/nostr';
+
 import * as SecureStore from 'expo-secure-store';
 import * as TaskManager from 'expo-task-manager';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -111,7 +113,7 @@ TaskManager.defineTask(DRAFT_TASK, async ({ data, error }: any) => {
     let state = stateRaw ? JSON.parse(stateRaw) : {
       phase: 'warmup',
       warmupCount: 0,
-      route: [],
+      route: [] as any[],
       spikes: 0,
       startTime: Date.now(),
       lastMovingTime: Date.now(),
@@ -356,8 +358,36 @@ export default function App() {
   const [showHistory, setShowHistory] = useState(false);
   const [showFeed, setShowFeed] = useState(false);
   const [isFeedLoading, setIsFeedLoading] = useState(false);
-  const [feedTab, setFeedTab] = useState<'contests' | 'rides' | 'feed' | 'drafts'>('feed');
+  const [feedTab, setFeedTab] = useState<'contests' | 'rides' | 'feed' | 'drafts' | 'chat' | 'activity'>('feed');
   const [showSettings, setShowSettings] = useState(false);
+  const [customRelays, setCustomRelays] = useState<string[]>([]);
+  const [newRelayUrl, setNewRelayUrl] = useState('');
+
+  // ── Load Custom Relays ──────────────────
+  useEffect(() => {
+    import('./src/lib/nostr').then(({ getRelays }) => {
+      getRelays().then(setCustomRelays);
+    });
+  }, []);
+
+  const handleAddRelay = async () => {
+    if (!newRelayUrl.trim().startsWith('ws')) {
+      Alert.alert("Invalid URL", "Relay URL must start with ws:// or wss://");
+      return;
+    }
+    const updated = [...customRelays, newRelayUrl.trim()];
+    setCustomRelays(updated);
+    setNewRelayUrl('');
+    const { saveRelays } = await import('./src/lib/nostr');
+    await saveRelays(updated);
+  };
+
+  const handleRemoveRelay = async (url: string) => {
+    const updated = customRelays.filter(r => r !== url);
+    setCustomRelays(updated);
+    const { saveRelays } = await import('./src/lib/nostr');
+    await saveRelays(updated);
+  };
   const [showSchedule, setShowSchedule] = useState(false);
 
   // Auto-detect drafts
@@ -392,6 +422,8 @@ export default function App() {
   const [postRidePrivacy, setPostRidePrivacy] = useState<'full' | 'hidden'>('full');
   const [postRideScheduleMode, setPostRideScheduleMode] = useState(false);
   const [trimTails, setTrimTails] = useState(true);
+  const [shareToFeed, setShareToFeed] = useState(true);
+  const [shareToChat, setShareToChat] = useState(true);
   const [postRideDate, setPostRideDate] = useState(new Date());
   const [postRideTime, setPostRideTime] = useState(new Date());
   const [postRideLocation, setPostRideLocation] = useState('');
@@ -410,12 +442,28 @@ export default function App() {
   const [comments, setComments] = useState<RideComment[]>([]);
   const [newComment, setNewComment] = useState('');
   const [isPublishingComment, setIsPublishingComment] = useState(false);
+  const [globalMessages, setGlobalMessages] = useState<NDKEvent[]>([]);
+  const [isChatLoading, setIsChatLoading] = useState(false);
+  const [showSocialOverlay, setShowSocialOverlay] = useState(false);
+  const [socialTab, setSocialTab] = useState<'chat' | 'activity'>('chat');
+  const [newChatText, setNewChatText] = useState('');
+  const [isSendingChat, setIsSendingChat] = useState(false);
+
+  const [globalComments, setGlobalComments] = useState<RideComment[]>([]);
+  const [reactions, setReactions] = useState<Record<string, ReactionSummary[]>>({});
+  const [expandedComments, setExpandedComments] = useState<Record<string, boolean>>({});
+  const [reactingId, setReactingId] = useState<string | null>(null);
+  const [isSocialLoading, setIsSocialLoading] = useState(false);
 
   const [selectedMapRide, setSelectedMapRide] = useState<RideEvent | null>(null);
   const [activeDMUser, setActiveDMUser] = useState<string | null>(null);
   const [dmMessages, setDmMessages] = useState<DMessage[]>([]);
   const [newDMText, setNewDMText] = useState('');
   const [isSendingDM, setIsSendingDM] = useState(false);
+  const [backToSocialHub, setBackToSocialHub] = useState(false);
+  const [discussionFromSocial, setDiscussionFromSocial] = useState(false);
+  const socialScrollRef = useRef<any>(null);
+  const socialCardOffsets = useRef<Record<string, number>>({});
 
   // Debug Logs
   const [showLogs, setShowLogs] = useState(false);
@@ -439,6 +487,13 @@ export default function App() {
       fetchDMs(activeDMUser).then(setDmMessages);
     }
   }, [activeDMUser]);
+
+  // Scroll chat to bottom when new messages arrive
+  useEffect(() => {
+    if (globalMessages.length > 0 && chatScrollRef.current) {
+      setTimeout(() => chatScrollRef.current?.scrollToEnd({ animated: false }), 100);
+    }
+  }, [globalMessages.length]);
 
   const [schedName, setSchedName] = useState('');
   const [schedDesc, setSchedDesc] = useState('');
@@ -493,6 +548,7 @@ export default function App() {
   // ── Sync auto-detect task with UI & storage ──────────
   const isSyncingRef = useRef(false);
   const pollerRef = useRef<NodeJS.Timeout | null>(null);
+  const chatScrollRef = useRef<any>(null);
   const syncAutoDetectState = async (forceRestart = false) => {
     if (isSyncingRef.current) return;
     isSyncingRef.current = true;
@@ -508,6 +564,8 @@ export default function App() {
             if (isRunning && forceRestart) {
               await logEvent("🛑 Auto-detect reset (manual toggle)");
               await Location.stopLocationUpdatesAsync(DRAFT_TASK);
+              // Android LocationManager needs time to deregister before re-registering same task
+              await new Promise(r => setTimeout(r, 400));
             }
             // Restart task if it should be running but isn't, or if we're forcing a refresh
             if (!isRunning) await logEvent("🔄 Auto-detect starting...");
@@ -554,6 +612,7 @@ export default function App() {
     await syncAutoDetectState();
   };
 
+
   // ── Mount ──────────────────────────────────────────
   useEffect(() => {
     let mounted = true;
@@ -568,7 +627,34 @@ export default function App() {
     });
 
     (async () => {
-      await logEvent("🚀 App Mount: Background System Sync Initiated");
+      await logEvent("🚀 App Mount");
+
+      // ── Location FIRST — show map position immediately ──────────────────
+      // This runs before NWC/auto-detect init so the map isn't blank for 25s
+      try {
+        const { status: locStatus } = await Location.requestForegroundPermissionsAsync();
+        if (locStatus === 'granted') {
+          Location.requestBackgroundPermissionsAsync().catch(() => { });
+          const lastKnown = await Location.getLastKnownPositionAsync({});
+          if (lastKnown) {
+            setLocation(lastKnown);
+            setMapCenter({ lat: lastKnown.coords.latitude, lng: lastKnown.coords.longitude });
+          }
+          Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }).then(loc => {
+            setLocation(loc);
+            setMapCenter({ lat: loc.coords.latitude, lng: loc.coords.longitude });
+          }).catch(() => { });
+        } else {
+          logEvent("❌ Location permissions denied");
+        }
+      } catch (e) { console.warn('Location init failed:', e); }
+
+      // ── Slow inits run AFTER location is shown ───────────────────────────
+      try {
+        const hex = await getPublicKeyHex();
+        if (hex) setCurrentHex(hex);
+      } catch (e) { console.error("Failed to fetch public key hex on mount:", e); }
+
       const savedNwc = await SecureStore.getItemAsync('bikel_nwc_uri');
       if (savedNwc) {
         setNwcURI(savedNwc);
@@ -576,32 +662,17 @@ export default function App() {
         if (success) setIsNWCConnected(true);
       }
 
-      try {
-        const hex = await getPublicKeyHex();
-        if (hex) setCurrentHex(hex);
-      } catch (e) {
-        console.error("Failed to fetch public key hex on mount:", e);
-      }
-
-      // Re-sync auto-detect task and UI state (forcing restart to ensure banner shows)
+      // Re-sync auto-detect task
       await syncAutoDetectState(true);
 
-      // Load drafts
-      await loadDrafts();
+      try {
+        const { status: nStatus } = await Notifications.getPermissionsAsync();
+        if (nStatus !== 'granted') {
+          await Notifications.requestPermissionsAsync();
+        }
+      } catch (e) { }
 
-      let { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== 'granted') return;
-      // Show last known position instantly so the map isn't blank while waiting
-      const lastKnown = await Location.getLastKnownPositionAsync({});
-      if (lastKnown) {
-        setLocation(lastKnown);
-        setMapCenter({ lat: lastKnown.coords.latitude, lng: lastKnown.coords.longitude });
-      }
-      // Then get a fresh fix in the background without blocking
-      Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }).then(loc => {
-        setLocation(loc);
-        setMapCenter({ lat: loc.coords.latitude, lng: loc.coords.longitude });
-      }).catch(() => { /* non-fatal, last known is fine */ });
+      await loadDrafts();
     })();
 
     // Poll for new drafts every 60s
@@ -637,7 +708,11 @@ export default function App() {
       if (activeDMUser) { setActiveDMUser(null); return true; }
 
       // Discussion (Inner view)
-      if (showDiscussion) { setShowDiscussion(false); return true; }
+      if (showDiscussion) {
+        setShowDiscussion(false);
+        setDiscussionFromSocial(false);
+        return true;
+      }
 
       // Author Profile (Inner view)
       if (viewingAuthor) { setViewingAuthor(null); return true; }
@@ -663,9 +738,17 @@ export default function App() {
       if (showHistory) { setShowHistory(false); return true; }
       if (showSchedule) { setShowSchedule(false); return true; }
       if (showFeed) { setShowFeed(false); return true; }
+      if (showSocialOverlay) { setShowSocialOverlay(false); return true; }
 
       // Ride Detail Card (Map overlay) - checked last so it reappears when overlays close
-      if (selectedMapRide) { setSelectedMapRide(null); return true; }
+      if (selectedMapRide) {
+        setSelectedMapRide(null);
+        if (backToSocialHub) {
+          setBackToSocialHub(false);
+          setShowSocialOverlay(true);
+        }
+        return true;
+      }
 
       // Route Preview (Map layer)
       if (selectedRoute.length > 0) { setSelectedRoute([]); return true; }
@@ -676,7 +759,7 @@ export default function App() {
 
     const backHandler = BackHandler.addEventListener('hardwareBackPress', onBackPress);
     return () => backHandler.remove();
-  }, [activeDMUser, showDiscussion, viewingAuthor, selectedRoute, selectedContest, showPostRideModal, selectedDraft, showSettings, showHistory, showSchedule, showFeed, showLogs, selectedMapRide]);
+  }, [activeDMUser, showDiscussion, viewingAuthor, selectedRoute, selectedContest, showPostRideModal, selectedDraft, showSettings, showHistory, showSchedule, showFeed, showLogs, selectedMapRide, showSocialOverlay, backToSocialHub]);
 
   // ── Map Sync Logic ──────────────────────────────────
   const rideAgeColor = (rideTime: number): { color: string; opacity: number } => {
@@ -717,30 +800,56 @@ export default function App() {
     return markers;
   }, [location]);
 
+  // Group activity feed comments by the event they reference.
+  // This lets us show nested comments under ride/post cards without extra relay queries.
+  const commentsByEventId = useMemo(() => {
+    const map: Record<string, RideComment[]> = {};
+    globalComments.forEach(c => {
+      if (!c.isRide && c.rideId) {
+        if (!map[c.rideId]) map[c.rideId] = [];
+        map[c.rideId].push(c);
+      }
+    });
+    // Sort each thread oldest-first
+    Object.values(map).forEach(arr => arr.sort((a, b) => a.createdAt - b.createdAt));
+    return map;
+  }, [globalComments]);
+
   const mapShapes = useMemo(() => {
     const shapes: any[] = [];
 
     // 1. Draw all global rides first (bottom layers)
     filteredGlobalRides.forEach(ride => {
+      if (!ride.route || ride.route.length === 0) return;
+
       const { color, opacity } = rideAgeColor(ride.time);
       // Main polyline
       shapes.push({
         id: `ride_${ride.id}`,
         shapeType: MapShapeType.POLYLINE,
-        positions: ride.route.map(([lat, lng]) => ({ lat, lng })),
+        positions: ride.route.map(pt => ({
+          lat: parseFloat(pt[0] as any),
+          lng: parseFloat(pt[1] as any)
+        })).filter(p => !isNaN(p.lat) && !isNaN(p.lng)),
         color: color,
         width: 3,
         opacity: opacity,
       });
 
       // Small start circle for visibility (Web style)
-      shapes.push({
-        id: `ride_start_v_${ride.id}`,
-        shapeType: MapShapeType.CIRCLE_MARKER,
-        center: { lat: ride.route[0][0], lng: ride.route[0][1] },
-        color: color,
-        radius: 3,
-      });
+      const startPt = ride.route[0];
+      if (startPt && startPt.length >= 2) {
+        shapes.push({
+          id: `ride_start_v_${ride.id}`,
+          shapeType: MapShapeType.CIRCLE_MARKER,
+          center: {
+            lat: parseFloat(startPt[0] as any),
+            lng: parseFloat(startPt[1] as any)
+          },
+          color: color,
+          radius: 3,
+        });
+      }
     });
 
     // 2. Draw the highlighted route last (top layer)
@@ -797,43 +906,45 @@ export default function App() {
   };
 
 
+  const loadReactions = async (eventId: string) => {
+    try {
+      const r = await fetchReactions(eventId);
+      setReactions(prev => ({ ...prev, [eventId]: r }));
+    } catch (e) { console.warn('Failed to load reactions:', e); }
+  };
+
   const loadFeeds = async (retryNum = 0) => {
     setIsFeedLoading(true);
-    if (retryNum === 0) setLoadingStatus('Connecting to Nostr...');
-    else setLoadingStatus(`Retrying feed sync (attempt ${retryNum})...`);
+    setLoadingStatus(retryNum === 0 ? 'Syncing feeds...' : `Retrying... (${retryNum})`);
 
     try {
-      setLoadingStatus('Fetching Recent Rides...');
-      const recentRides = await fetchRecentRides();
-      setGlobalRides(recentRides);
+      // Fire each fetch independently — state updates as soon as each resolves.
+      // Social feed (10s) no longer blocks recent rides (5s) from appearing.
+      const ridePromise = fetchRecentRides().then(r => { setGlobalRides(r); return r; }).catch(() => [] as RideEvent[]);
+      const schedPromise = fetchScheduledRides().then(r => { setScheduledRides(r); return r; }).catch(() => [] as ScheduledRideEvent[]);
+      const contestPromise = fetchContests().then(r => { setActiveContests(r); return r; }).catch(() => [] as ContestEvent[]);
+      const myPromise = fetchMyRides().then(r => { setMyRides(r); return r; }).catch(() => [] as RideEvent[]);
+      const socialPromise = fetchAllBikelSocial([]).then(r => {
+        if (r.length > 0) setGlobalComments(r);
+        return r;
+      }).catch(() => [] as RideComment[]);
 
-      setLoadingStatus('Fetching Group Rides...');
-      const scheduled = await fetchScheduledRides();
-      setScheduledRides(scheduled);
+      // Wait for all to finish before loading profiles and checking retry
+      const [recentRides, scheduled, contests, my, socialItems] = await Promise.all([
+        ridePromise, schedPromise, contestPromise, myPromise, socialPromise
+      ]);
 
-      setLoadingStatus('Fetching Challenges...');
-      const contests = await fetchContests();
-      setActiveContests(contests);
+      const extractedPubkeys = [
+        ...(recentRides as RideEvent[]).map((r: RideEvent) => r.hexPubkey || r.pubkey),
+        ...(scheduled as ScheduledRideEvent[]).map((r: ScheduledRideEvent) => r.hexPubkey || r.pubkey),
+        ...(contests as ContestEvent[]).map((c: ContestEvent) => c.hexPubkey || c.pubkey),
+      ];
+      if (extractedPubkeys.length > 0) loadAuthorProfiles(extractedPubkeys).catch(console.error);
 
-      setLoadingStatus('Fetching Personal Rides...');
-      const my = await fetchMyRides();
-      setMyRides(my);
-
-      let extractedPubkeys: string[] = [];
-      extractedPubkeys.push(...recentRides.map(r => r.hexPubkey || r.pubkey));
-      extractedPubkeys.push(...scheduled.map(r => r.hexPubkey || r.pubkey));
-      extractedPubkeys.push(...contests.map(c => c.hexPubkey || c.pubkey));
-
-      if (extractedPubkeys.length > 0) {
-        setLoadingStatus('Syncing Profiles...');
-        loadAuthorProfiles(extractedPubkeys).catch(console.error);
-      }
-
-      // Check if we found anything. If empty across all global feeds, retry up to 3 times.
-      const totalFound = recentRides.length + scheduled.length + contests.length;
-      if (totalFound === 0 && retryNum < 3) {
-        setLoadingStatus(`No rides found yet. Retrying in 3s...`);
-        setTimeout(() => loadFeeds(retryNum + 1), 3000);
+      // Retry if recent rides came back empty (relay may have been slow)
+      if ((recentRides as RideEvent[]).length === 0 && retryNum < 2) {
+        setLoadingStatus(`No rides yet, retrying...`);
+        setTimeout(() => loadFeeds(retryNum + 1), 4000);
         return;
       }
 
@@ -852,7 +963,7 @@ export default function App() {
     try {
       await Promise.race([
         loadFeeds(),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('Network timeout')), 10000))
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Network timeout')), 30000))
       ]);
     } catch (e) {
       console.error("Failed to refresh feeds before timeout", e);
@@ -919,6 +1030,59 @@ export default function App() {
       clearInterval(timerInterval);
     };
   }, [isTracking]);
+
+  const handleSocialRefresh = async () => {
+    if (isSocialLoading) return;
+    await logEvent(`🔄 Social Refresh: ${socialTab} (Starting)`);
+    setIsSocialLoading(true);
+    try {
+      if (socialTab === 'chat') {
+        const msgs = await fetchChannelMessages();
+        await logEvent(`📥 Chat: fetched ${msgs.length} messages`);
+        setGlobalMessages(msgs);
+        loadAuthorProfiles(msgs.map(m => m.pubkey).filter(Boolean) as string[]).catch(console.error);
+      } else {
+        const rideIds = globalRides.slice(0, 20).map(r => r.id);
+        const comms = await fetchAllBikelSocial(rideIds);
+
+        // Merge globalRides into the activity feed
+        // Use a Map for effective deduplication.
+        // mappedRides was removed — the activity feed shows only what fetchAllBikelSocial
+        // explicitly fetches (community-tagged posts). Rides are already in the Recent Rides tab.
+        // Priority: comms (fresh fetch) wins over globalComments (prior cache).
+        const uniqueMap: { [id: string]: RideComment } = {};
+        globalComments.forEach(c => { uniqueMap[c.id] = c; }); // prior cache — lowest priority
+        comms.forEach(c => { uniqueMap[c.id] = c; });           // fresh fetch — highest priority
+
+        const unified: RideComment[] = Object.values(uniqueMap);
+        unified.sort((a, b) => b.createdAt - a.createdAt);
+
+        await logEvent(`📥 Social: merged ${comms.length} new items. Total persistent: ${unified.length}`);
+        const sliced = unified.slice(0, 150);
+        setGlobalComments(sliced);
+        loadAuthorProfiles(sliced.map((c: RideComment) => c.pubkey).filter(Boolean) as string[]).catch(console.error);
+        // Load reactions for each card, staggered 150ms apart so we don't flood the relay
+        sliced.forEach((item: RideComment, i: number) => {
+          setTimeout(() => loadReactions(item.id), i * 150);
+        });
+      }
+    } catch (e: any) {
+      const err = e.message || String(e);
+      await logEvent(`❌ Social refresh error: ${err}`);
+      console.error("Social refresh failed:", e);
+    }
+    setIsSocialLoading(false);
+  }
+
+  // ── Social Refresh Triggers ────────────────────
+  // These must be defined AFTER handleSocialRefresh (const functions are not hoisted)
+  useEffect(() => {
+    if (showSocialOverlay) {
+      handleSocialRefresh();
+    }
+  }, [showSocialOverlay, socialTab]);
+
+  // Activity feed is now pre-loaded in loadFeeds() — no separate trigger needed
 
   // ── Manual tracking toggle ─────────────────────────
   const toggleTracking = async () => {
@@ -1267,14 +1431,18 @@ export default function App() {
               </View>
             </TouchableOpacity>
             <TouchableOpacity
-              style={{ paddingHorizontal: 12, backgroundColor: 'rgba(0,255,170,0.1)', paddingVertical: 10, borderRadius: 8, alignItems: 'center' }}
+              style={{ paddingHorizontal: 12, backgroundColor: selectedMapRide?.route && selectedMapRide.route.length > 0 ? 'rgba(0,255,170,0.1)' : 'rgba(255,255,255,0.1)', paddingVertical: 10, borderRadius: 8, alignItems: 'center', minWidth: 80 }}
               onPress={() => {
-                if (selectedMapRide.route && selectedMapRide.route.length > 0) {
+                if (selectedMapRide?.route && selectedMapRide.route.length > 0) {
                   setMapCenter({ lat: selectedMapRide.route[0][0], lng: selectedMapRide.route[0][1] });
                 }
               }}
             >
-              <LocateFixed size={18} color="#00ffaa" />
+              {selectedMapRide?.route && selectedMapRide.route.length > 0 ? (
+                <LocateFixed size={18} color="#00ffaa" />
+              ) : (
+                <Text style={{ color: '#888', fontWeight: 'bold', fontSize: 10 }}>DATA ONLY</Text>
+              )}
             </TouchableOpacity>
           </View>
         </View>
@@ -1288,27 +1456,37 @@ export default function App() {
         </View>
         <View style={{ flexDirection: 'row', gap: 16, alignItems: 'center' }}>
           <TouchableOpacity onPress={() => {
-            setShowPostRideModal(false); setPostingFromDraft(null);
-            setShowSettings(false); setShowHistory(false); setShowFeed(false); setShowSchedule(!showSchedule);
+            setShowPostRideModal(false); setPostingFromDraft(null); setSelectedMapRide(null);
+            setShowSettings(false); setShowHistory(false); setShowFeed(false); setShowSocialOverlay(false);
+            setShowSchedule(!showSchedule);
           }}>
             <CalendarPlus size={24} color={showSchedule ? "#00ffaa" : "#fff"} />
           </TouchableOpacity>
           <TouchableOpacity onPress={() => {
-            setShowPostRideModal(false); setPostingFromDraft(null);
-            setShowSettings(false); setShowSchedule(false); setShowHistory(false); setShowFeed(!showFeed);
+            setShowPostRideModal(false); setPostingFromDraft(null); setSelectedMapRide(null);
+            setShowSettings(false); setShowSchedule(false); setShowHistory(false); setShowFeed(false);
+            setShowSocialOverlay(!showSocialOverlay);
+          }}>
+            <MessageSquare size={24} color={showSocialOverlay ? "#00ffaa" : "#fff"} />
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => {
+            setShowPostRideModal(false); setPostingFromDraft(null); setSelectedMapRide(null);
+            setShowSettings(false); setShowSchedule(false); setShowHistory(false); setShowSocialOverlay(false);
+            setShowFeed(!showFeed);
           }}>
             <Globe size={24} color={showFeed ? "#00ffaa" : "#fff"} />
           </TouchableOpacity>
           <TouchableOpacity onPress={() => {
-            setShowPostRideModal(false); setPostingFromDraft(null);
-            setShowSettings(false); setShowSchedule(false); setShowFeed(false); setShowHistory(!showHistory);
+            setShowPostRideModal(false); setPostingFromDraft(null); setSelectedMapRide(null);
+            setShowSettings(false); setShowSchedule(false); setShowFeed(false); setShowSocialOverlay(false);
+            setShowHistory(!showHistory);
           }}>
             <History size={24} color={showHistory ? "#00ffaa" : "#fff"} />
           </TouchableOpacity>
 
           <TouchableOpacity onPress={async () => {
-            setShowPostRideModal(false); setPostingFromDraft(null);
-            setShowHistory(false); setShowSchedule(false); setShowFeed(false);
+            setShowPostRideModal(false); setPostingFromDraft(null); setSelectedMapRide(null);
+            setShowHistory(false); setShowSchedule(false); setShowFeed(false); setShowSocialOverlay(false);
             if (!showSettings) {
               try {
                 const nsec = await getPrivateKeyNsec();
@@ -1400,6 +1578,35 @@ export default function App() {
               }}>
                 <Text style={styles.saveButtonText}>{isPublishingProfile ? 'SAVING...' : 'SAVE PROFILE'}</Text>
               </TouchableOpacity>
+            </View>
+
+            <View style={styles.settingsSection}>
+              <Text style={styles.settingsLabel}>RELAY MANAGEMENT</Text>
+              {customRelays.map(url => (
+                <View key={url} style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.3)', padding: 10, borderRadius: 8, marginBottom: 6 }}>
+                  <Text style={{ color: '#fff', fontSize: 13, flex: 1 }} numberOfLines={1}>{url}</Text>
+                  <TouchableOpacity onPress={() => handleRemoveRelay(url)} style={{ padding: 4 }}>
+                    <Trash2 size={18} color="#ff4d4f" />
+                  </TouchableOpacity>
+                </View>
+              ))}
+              <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
+                <TextInput
+                  style={[styles.keyInput, { flex: 1, marginBottom: 0 }]}
+                  placeholder="wss://relay..."
+                  placeholderTextColor="rgba(255,255,255,0.3)"
+                  value={newRelayUrl}
+                  onChangeText={setNewRelayUrl}
+                  autoCapitalize="none"
+                />
+                <TouchableOpacity
+                  style={{ backgroundColor: '#00ccff', padding: 12, borderRadius: 8, justifyContent: 'center' }}
+                  onPress={handleAddRelay}
+                >
+                  <Text style={{ color: '#000', fontWeight: 'bold' }}>ADD</Text>
+                </TouchableOpacity>
+              </View>
+              <Text style={[styles.settingsHelp, { marginTop: 10 }]}>Wait a few seconds after adding/removing for the app to reconnect.</Text>
             </View>
 
             <View style={[styles.settingsSection, { marginBottom: 60 }]}>
@@ -1637,10 +1844,10 @@ export default function App() {
           <View style={{ marginBottom: 12 }}>
             <View style={{ flexDirection: 'row', backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: 8, padding: 4, gap: 4 }}>
               {[
-                { id: 'contests', label: 'CHALLENGES', activeColor: '#eab308' },
-                { id: 'rides', label: 'GROUP RIDES', activeColor: '#00ffaa' },
-                { id: 'feed', label: 'RECENT RIDES', activeColor: '#00ccff' },
-                { id: 'drafts', label: `DRAFTS${drafts.length > 0 ? ` (${drafts.length})` : ''}`, activeColor: '#eab308' },
+                { id: 'feed', label: 'RIDES', activeColor: '#00ccff' },
+                { id: 'rides', label: 'GROUP', activeColor: '#00ffaa' },
+                { id: 'contests', label: 'BEST', activeColor: '#eab308' },
+                { id: 'drafts', label: 'DRAFTS', activeColor: '#eab308' },
               ].map(tab => (
                 <TouchableOpacity
                   key={tab.id}
@@ -2141,9 +2348,290 @@ export default function App() {
                     );
                   })
                 )}
+                <View style={{ height: 80 }} />
               </>
             )}
           </ScrollView>
+        </View>
+      )}
+
+      {/* Social Hub Overlay (Separate) */}
+      {showSocialOverlay && (
+        <View style={styles.historyOverlay}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+            <Text style={styles.historyTitle}>Social Hub</Text>
+            {isSocialLoading && <ActivityIndicator size="small" color="#00ffaa" />}
+          </View>
+
+          <View style={{ flexDirection: 'row', backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: 8, padding: 4, gap: 4, marginBottom: 12 }}>
+            <TouchableOpacity style={{ flex: 1, paddingVertical: 8, backgroundColor: socialTab === 'chat' ? '#00ccff' : 'transparent', borderRadius: 6, alignItems: 'center' }} onPress={() => setSocialTab('chat')}>
+              <Text style={{ color: socialTab === 'chat' ? '#000' : '#fff', fontWeight: 'bold', fontSize: 12 }}>CHAT</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={{ flex: 1, paddingVertical: 8, backgroundColor: socialTab === 'activity' ? '#00ccff' : 'transparent', borderRadius: 6, alignItems: 'center' }} onPress={() => setSocialTab('activity')}>
+              <Text style={{ color: socialTab === 'activity' ? '#000' : '#fff', fontWeight: 'bold', fontSize: 12 }}>ACTIVITY</Text>
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView ref={socialTab === 'chat' ? chatScrollRef : socialScrollRef} style={{ flex: 1 }} showsVerticalScrollIndicator={false} refreshControl={<RefreshControl refreshing={isSocialLoading} onRefresh={handleSocialRefresh} tintColor="#fff" />}>
+            {socialTab === 'chat' ? (
+              globalMessages.length === 0 && !isSocialLoading ? (
+                <Text style={{ color: '#666', textAlign: 'center', marginTop: 40 }}>No chat messages yet...</Text>
+              ) : (
+                globalMessages.map(m => {
+                  const profile = profiles[m.pubkey];
+                  const nick = profile?.nip05 || profile?.name || m.pubkey.substring(0, 8);
+                  return (
+                    <View key={m.id} style={{ marginBottom: 16, backgroundColor: 'rgba(255,255,255,0.03)', padding: 10, borderRadius: 8 }}>
+                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 }}>
+                        <Text style={{ color: '#00ccff', fontSize: 12, fontWeight: 'bold' }}>{nick}</Text>
+                        <Text style={{ color: '#666', fontSize: 10 }}>{new Date(m.created_at! * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
+                      </View>
+                      <Text style={{ color: '#fff', fontSize: 14 }}>{m.content}</Text>
+                    </View>
+                  );
+                })
+              )
+            ) : (
+              globalComments.length === 0 && !isSocialLoading ? (
+                <Text style={{ color: '#666', textAlign: 'center', marginTop: 40 }}>No recent activity found.</Text>
+              ) : (
+                globalComments.map(c => {
+                  const profile = profiles[c.hexPubkey || c.pubkey];
+                  const nick = profile?.nip05 || profile?.name || (c.hexPubkey || c.pubkey).substring(0, 8) + '...';
+                  const avatar = profile?.picture;
+
+                  const isRide = !!c.isRide;
+                  const isComment = !c.isRide && !!c.rideId;
+                  // Only show VIEW RIDE if it's a bikel ride (has distance) or a comment on one
+                  // MAP button: only for ride cards that have confirmed route data.
+                  // Comments just get Discussion — the route lives on the ride itself.
+                  const canViewRide = isRide && !!c.hasRoute;
+                  const discussId = isComment ? c.rideId! : c.id;
+
+                  // Skip standalone comment cards — they render nested under their parent ride/post
+                  if (isComment) return null;
+
+                  const nestedComments = commentsByEventId[c.id] || [];
+                  const isExpanded = !!expandedComments[c.id];
+                  const visibleComments = isExpanded ? nestedComments : nestedComments.slice(0, 2);
+
+                  return (
+                    <View
+                      key={c.id}
+                      onLayout={(e) => { socialCardOffsets.current[c.id] = e.nativeEvent.layout.y; }}
+                      style={{ marginBottom: 12, backgroundColor: 'rgba(255,255,255,0.03)', borderRadius: 14, overflow: 'hidden', borderWidth: 1, borderColor: isRide ? 'rgba(0,255,170,0.12)' : 'rgba(255,255,255,0.06)' }}>
+
+                      {/* Full-width photo — taller for Instagram feel */}
+                      {c.image && (
+                        <Image source={{ uri: c.image }} style={{ width: '100%', height: 220, backgroundColor: '#111' }} resizeMode="cover" />
+                      )}
+
+                      <View style={{ padding: 12 }}>
+                        {/* Author row */}
+                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                          <TouchableOpacity
+                            style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}
+                            onPress={() => {
+                              setViewingAuthor(c.hexPubkey || c.pubkey);
+                              setIsLoadingAuthor(true);
+                              fetchUserRides(c.hexPubkey || c.pubkey).then(setAuthorRides).finally(() => setIsLoadingAuthor(false));
+                              setShowSocialOverlay(false);
+                            }}
+                          >
+                            {avatar
+                              ? <Image source={{ uri: avatar }} style={{ width: 32, height: 32, borderRadius: 16, borderWidth: 1, borderColor: isRide ? '#00ffaa' : '#444' }} />
+                              : <View style={{ width: 32, height: 32, borderRadius: 16, backgroundColor: isRide ? 'rgba(0,255,170,0.2)' : 'rgba(255,255,255,0.1)', alignItems: 'center', justifyContent: 'center' }}>
+                                <Text style={{ color: isRide ? '#00ffaa' : '#888', fontSize: 12, fontWeight: 'bold' }}>{nick.substring(0, 1).toUpperCase()}</Text>
+                              </View>
+                            }
+                            <View>
+                              <Text style={{ color: '#fff', fontSize: 13, fontWeight: 'bold' }}>{nick}</Text>
+                              <Text style={{ color: '#555', fontSize: 10 }}>
+                                {isRide ? '🚲 shared a ride' : '📝 posted'} · {new Date(c.createdAt * 1000).toLocaleDateString([], { month: 'short', day: 'numeric' })}
+                              </Text>
+                            </View>
+                          </TouchableOpacity>
+                        </View>
+
+                        {/* Ride: title + compact stats in one line */}
+                        {isRide && (
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6, flexWrap: 'wrap' }}>
+                            {c.title && (
+                              <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 14 }}>{c.title}</Text>
+                            )}
+                            {c.distance && parseFloat(c.distance) > 0 && (
+                              <Text style={{ color: '#00ffaa', fontSize: 13, fontWeight: 'bold' }}>{parseFloat(c.distance).toFixed(1)} mi</Text>
+                            )}
+                            {c.duration && c.duration !== '0m' && c.duration !== '0:00' && (
+                              <Text style={{ color: '#888', fontSize: 12 }}>{c.duration}</Text>
+                            )}
+                          </View>
+                        )}
+
+                        {/* Post content — skip for rides where content just repeats the title */}
+                        {c.content && !(isRide && c.title && c.content.startsWith(c.title)) && (
+                          <Text style={{ color: '#ccc', fontSize: 14, lineHeight: 20, marginBottom: 8 }} numberOfLines={isRide ? 2 : undefined}>
+                            {c.content}
+                          </Text>
+                        )}
+
+                        {/* Reaction counts row */}
+                        {(() => {
+                          const QUICK = ['🔥', '🚴', '💪', '👍', '⚡'];
+                          const itemReactions = reactions[c.id] || [];
+                          return (
+                            <View style={{ marginBottom: 8 }}>
+                              {itemReactions.length > 0 && (
+                                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 6 }}>
+                                  {itemReactions.map(r => (
+                                    <TouchableOpacity
+                                      key={r.emoji}
+                                      style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: r.reactedByMe ? 'rgba(0,255,170,0.15)' : 'rgba(255,255,255,0.07)', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 20, borderWidth: 1, borderColor: r.reactedByMe ? 'rgba(0,255,170,0.4)' : 'rgba(255,255,255,0.1)' }}
+                                      onPress={async () => {
+                                        if (r.reactedByMe && r.myReactionId) { await deleteReaction(r.myReactionId); }
+                                        else { await publishReaction(c.id, c.hexPubkey || c.pubkey, r.emoji); }
+                                        loadReactions(c.id);
+                                      }}
+                                    >
+                                      <Text style={{ fontSize: 14 }}>{r.emoji}</Text>
+                                      <Text style={{ color: r.reactedByMe ? '#00ffaa' : '#888', fontSize: 12, fontWeight: 'bold' }}>{r.count}</Text>
+                                    </TouchableOpacity>
+                                  ))}
+                                </View>
+                              )}
+                              {/* Quick-react bar */}
+                              <View style={{ flexDirection: 'row', gap: 5, alignItems: 'center' }}>
+                                {QUICK.map(emoji => {
+                                  const ex = itemReactions.find(r => r.emoji === emoji);
+                                  return (
+                                    <TouchableOpacity
+                                      key={emoji}
+                                      disabled={reactingId === c.id}
+                                      style={{ paddingHorizontal: 7, paddingVertical: 4, borderRadius: 14, backgroundColor: ex?.reactedByMe ? 'rgba(0,255,170,0.15)' : 'rgba(255,255,255,0.05)', borderWidth: 1, borderColor: ex?.reactedByMe ? 'rgba(0,255,170,0.35)' : 'transparent' }}
+                                      onPress={async () => {
+                                        if (emoji === '⚡') {
+                                          if (!isNWCConnected) { Alert.alert('Wallet Required', 'Connect your Lightning Wallet in Settings to send zaps.'); return; }
+                                          const author = c.hexPubkey || c.pubkey;
+                                          const kind = (c.kind || 1) as number;
+                                          const displayName = profiles[author]?.nip05 || profiles[author]?.name || author.substring(0, 10) + '...';
+                                          Alert.alert('⚡ Send Zap', `Zap ${displayName} 21 sats?`, [
+                                            { text: 'Cancel', style: 'cancel' },
+                                            {
+                                              text: 'Zap ⚡', onPress: async () => {
+                                                setReactingId(c.id);
+                                                try {
+                                                  await zapRideEvent(c.id, author, kind, 21, '⚡ Great post!');
+                                                  Alert.alert('⚡ Zapped!', `21 sats sent to ${displayName}!`);
+                                                } catch (e: any) { Alert.alert('Zap Failed', e.message || 'Unknown error'); }
+                                                setReactingId(null);
+                                              }
+                                            },
+                                          ]);
+                                          return;
+                                        }
+                                        setReactingId(c.id);
+                                        if (ex?.reactedByMe && ex.myReactionId) { await deleteReaction(ex.myReactionId); }
+                                        else { await publishReaction(c.id, c.hexPubkey || c.pubkey, emoji); }
+                                        await loadReactions(c.id);
+                                        setReactingId(null);
+                                      }}
+                                    >
+                                      <Text style={{ fontSize: 15 }}>{emoji}</Text>
+                                    </TouchableOpacity>
+                                  );
+                                })}
+                                {/* Discussion button — inline with reactions */}
+                                <TouchableOpacity
+                                  style={{ marginLeft: 'auto', flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 14, backgroundColor: 'rgba(0,204,255,0.08)', borderWidth: 1, borderColor: 'rgba(0,204,255,0.2)' }}
+                                  onPress={() => {
+                                    const rideForDisc = globalRides.find(r => r.id === discussId);
+                                    if (rideForDisc) { setSelectedDiscussionRide(rideForDisc); }
+                                    else { setSelectedDiscussionRide({ id: discussId, pubkey: c.pubkey, hexPubkey: c.hexPubkey || c.pubkey, time: c.createdAt, distance: '0', duration: '0', visibility: 'full', route: [], kind: 33301 } as any); }
+                                    setDiscussionFromSocial(true);
+                                    setShowDiscussion(true);
+                                  }}
+                                >
+                                  <Text style={{ fontSize: 14 }}>💬</Text>
+                                  {nestedComments.length > 0 && (
+                                    <Text style={{ color: '#00ccff', fontSize: 12, fontWeight: 'bold' }}>{nestedComments.length}</Text>
+                                  )}
+                                </TouchableOpacity>
+                              </View>
+                            </View>
+                          );
+                        })()}
+
+                        {/* Nested comment thread */}
+                        {nestedComments.length > 0 && (
+                          <View style={{ marginTop: 6, borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.06)', paddingTop: 10 }}>
+                            {visibleComments.map((comment) => {
+                              const cp = profiles[comment.hexPubkey || comment.pubkey];
+                              const cn = cp?.nip05 || cp?.name || (comment.hexPubkey || comment.pubkey).substring(0, 8) + '...';
+                              const ca = cp?.picture;
+                              return (
+                                <View key={comment.id} style={{ flexDirection: 'row', gap: 8, marginBottom: 8 }}>
+                                  {ca
+                                    ? <Image source={{ uri: ca }} style={{ width: 22, height: 22, borderRadius: 11, marginTop: 2 }} />
+                                    : <View style={{ width: 22, height: 22, borderRadius: 11, backgroundColor: 'rgba(255,255,255,0.1)', alignItems: 'center', justifyContent: 'center', marginTop: 2 }}>
+                                      <Text style={{ color: '#888', fontSize: 9, fontWeight: 'bold' }}>{cn.substring(0, 1).toUpperCase()}</Text>
+                                    </View>
+                                  }
+                                  <View style={{ flex: 1 }}>
+                                    <Text style={{ color: '#00ccff', fontSize: 11, fontWeight: 'bold', marginBottom: 1 }}>{cn}</Text>
+                                    <Text style={{ color: '#bbb', fontSize: 13, lineHeight: 17 }}>{comment.content}</Text>
+                                  </View>
+                                </View>
+                              );
+                            })}
+                            {nestedComments.length > 2 && (
+                              <TouchableOpacity onPress={() => setExpandedComments(prev => ({ ...prev, [c.id]: !isExpanded }))} style={{ paddingVertical: 2 }}>
+                                <Text style={{ color: '#00ccff', fontSize: 12 }}>
+                                  {isExpanded ? '▲ Show less' : `▼ ${nestedComments.length - 2} more comment${nestedComments.length - 2 !== 1 ? 's' : ''}`}
+                                </Text>
+                              </TouchableOpacity>
+                            )}
+                          </View>
+                        )}
+                      </View>
+                    </View>
+                  );
+                })
+              )
+            )}
+            <View style={{ height: 80 }} />
+          </ScrollView>
+
+          {socialTab === 'chat' && (
+            <View style={{ flexDirection: 'row', gap: 10, marginTop: 12, alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.05)', padding: 8, borderRadius: 12 }}>
+              <TextInput
+                style={[styles.keyInput, { flex: 1, marginBottom: 0, backgroundColor: 'transparent', borderWidth: 0 }]}
+                placeholder="Message the group..."
+                placeholderTextColor="rgba(255,255,255,0.3)"
+                value={newChatText}
+                onChangeText={setNewChatText}
+                editable={!isSendingChat}
+              />
+              <TouchableOpacity
+                style={{ backgroundColor: '#00ccff', paddingHorizontal: 16, paddingVertical: 12, borderRadius: 8 }}
+                disabled={isSendingChat || !newChatText.trim()}
+                onPress={async () => {
+                  if (!newChatText.trim()) return;
+                  setIsSendingChat(true);
+                  try {
+                    await publishChannelMessage(newChatText.trim());
+                    setNewChatText('');
+                    const msgs = await fetchChannelMessages();
+                    setGlobalMessages(msgs);
+                  } catch (e: any) {
+                    Alert.alert("Error", "Failed to send message: " + e.message);
+                  }
+                  setIsSendingChat(false);
+                }}
+              >
+                <Text style={{ color: '#000', fontWeight: 'bold' }}>{isSendingChat ? '...' : 'SEND'}</Text>
+              </TouchableOpacity>
+            </View>
+          )}
         </View>
       )}
 
@@ -2499,11 +2987,23 @@ export default function App() {
                   {showPostRideTime && <DateTimePicker value={postRideTime} mode="time" onChange={(event: DateTimePickerEvent, d?: Date) => { setShowPostRideTime(Platform.OS === 'ios'); if (d) setPostRideTime(d); }} />}
                 </View>
               )}
-              <TouchableOpacity style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 16, backgroundColor: 'rgba(255,255,255,0.05)', padding: 12, borderRadius: 8 }} onPress={() => setTrimTails(!trimTails)}>
+              <TouchableOpacity style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 12, backgroundColor: 'rgba(255,255,255,0.05)', padding: 12, borderRadius: 8 }} onPress={() => setTrimTails(!trimTails)}>
                 <View style={{ width: 24, height: 24, borderRadius: 12, borderWidth: 2, borderColor: trimTails ? '#00ffaa' : 'rgba(255,255,255,0.3)', alignItems: 'center', justifyContent: 'center', marginRight: 10 }}>
                   {trimTails && <View style={{ width: 12, height: 12, borderRadius: 6, backgroundColor: '#00ffaa' }} />}
                 </View>
                 <Text style={{ color: '#fff', flex: 1 }}>Trim 0.1 miles from Start/End of Route for Privacy</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8, backgroundColor: 'rgba(0,255,170,0.05)', borderWidth: 1, borderColor: 'rgba(0,255,170,0.1)', padding: 12, borderRadius: 8 }} onPress={() => setShareToFeed(!shareToFeed)}>
+                <View style={{ width: 24, height: 24, borderRadius: 12, borderWidth: 2, borderColor: shareToFeed ? '#00ffaa' : 'rgba(255,255,255,0.3)', alignItems: 'center', justifyContent: 'center', marginRight: 10 }}>
+                  {shareToFeed && <View style={{ width: 12, height: 12, borderRadius: 6, backgroundColor: '#00ffaa' }} />}
+                </View>
+                <Text style={{ color: '#fff', flex: 1 }}>Share to Global Social Feed (Kind 1)</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={{ display: 'none', flexDirection: 'row', alignItems: 'center', marginBottom: 16, backgroundColor: 'rgba(0,170,255,0.05)', borderWidth: 1, borderColor: 'rgba(0,170,255,0.1)', padding: 12, borderRadius: 8 }} onPress={() => setShareToChat(!shareToChat)}>
+                <View style={{ width: 24, height: 24, borderRadius: 12, borderWidth: 2, borderColor: shareToChat ? '#00ccff' : 'rgba(255,255,255,0.3)', alignItems: 'center', justifyContent: 'center', marginRight: 10 }}>
+                  {shareToChat && <View style={{ width: 12, height: 12, borderRadius: 6, backgroundColor: '#00ccff' }} />}
+                </View>
+                <Text style={{ color: '#fff', flex: 1 }}>Share to Global Bikel Chat (Kind 42)</Text>
               </TouchableOpacity>
               <View style={{ flexDirection: 'row', gap: 10, marginTop: 10 }}>
                 <TouchableOpacity style={[styles.saveButton, { flex: 1, backgroundColor: 'rgba(255,255,255,0.1)' }]} onPress={() => {
@@ -2552,11 +3052,41 @@ export default function App() {
                       const startUnix = Math.floor(new Date(postRideDate.getFullYear(), postRideDate.getMonth(), postRideDate.getDate(), postRideTime.getHours(), postRideTime.getMinutes()).getTime() / 1000);
                       await logEvent(`📅 Scheduling ride: ${postRideTitle || "Untitled"}`);
                       await publishScheduledRide(postRideTitle || "Group Ride", postRideDesc || "Join my ride!", startUnix, postRideLocation, routePoints, postRideImageUrl, distance, duration);
-                      await publishRide(distance, duration, routePoints, postRidePrivacy, postRideTitle, postRideDesc, postRideImageUrl, confidenceToPost, elevation, logEvent);
+                      const rideEventId = await publishRide(distance, duration, routePoints, postRidePrivacy, postRideTitle, postRideDesc, postRideImageUrl, confidenceToPost, elevation, logEvent);
+
+                      if (shareToFeed && rideEventId) {
+                        const profile = profiles[currentHex];
+                        const nick = profile?.nip05 || profile?.name || "A rider";
+                        let content = `${nick} just scheduled a ride: ${postRideTitle || "Untitled"}\n\nDistance: ${distance.toFixed(2)} mi\nMeeting: ${postRideLocation}\n\n#bikel #cycling #nostr`;
+                        await publishSocialNote(content, rideEventId);
+                      }
+
+                      if (shareToChat && rideEventId) {
+                        const profile = profiles[currentHex];
+                        const nick = profile?.nip05 || profile?.name || "A rider";
+                        let content = `${nick} scheduled a ride: ${postRideTitle || "Untitled"} 🚲\nDistance: ${distance.toFixed(2)} mi\nMeeting: ${postRideLocation}`;
+                        await publishChannelMessage(content, rideEventId);
+                      }
+
                       Alert.alert("Ride Scheduled!", "Your group ride was published.");
                     } else {
                       await logEvent(`📤 Posting ride: ${postRideTitle || "Untitled"}`);
-                      await publishRide(distance, duration, routePoints, postRidePrivacy, postRideTitle, postRideDesc, postRideImageUrl, confidenceToPost, elevation, logEvent);
+                      const rideEventId = await publishRide(distance, duration, routePoints, postRidePrivacy, postRideTitle, postRideDesc, postRideImageUrl, confidenceToPost, elevation, logEvent);
+
+                      if (shareToFeed && rideEventId) {
+                        const profile = profiles[currentHex];
+                        const nick = profile?.nip05 || profile?.name || "A rider";
+                        let content = `${nick} just finished a ride: ${postRideTitle || "Ride"}\n\nRode ${distance.toFixed(2)} miles in ${Math.floor(duration / 60)}m! 🚲\n\n#bikel #cycling #nostr`;
+                        await publishSocialNote(content, rideEventId);
+                      }
+
+                      if (shareToChat && rideEventId) {
+                        const profile = profiles[currentHex];
+                        const nick = profile?.nip05 || profile?.name || "A rider";
+                        let content = `${nick} finished a ride: ${postRideTitle || "Ride"} 🚲\nDistance: ${distance.toFixed(2)} mi\nTime: ${Math.floor(duration / 60)}m`;
+                        await publishChannelMessage(content, rideEventId);
+                      }
+
                       Alert.alert("Ride Published!", "Your ride was published to Nostr.");
                     }
 
@@ -2590,26 +3120,102 @@ export default function App() {
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={[styles.historyOverlay, { zIndex: 1000 }]}>
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
             <Text style={styles.historyTitle}>Discussion</Text>
-            <TouchableOpacity onPress={() => { setShowDiscussion(false); setSelectedDiscussionRide(null); }} style={{ padding: 4 }}><X size={24} color="#fff" /></TouchableOpacity>
+            <TouchableOpacity onPress={() => { setShowDiscussion(false); setSelectedDiscussionRide(null); setDiscussionFromSocial(false); }} style={{ padding: 4 }}><X size={24} color="#fff" /></TouchableOpacity>
           </View>
           <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
-            {comments.length === 0 ? <Text style={styles.emptyText}>No comments yet. Be the first!</Text> : comments.map(c => (
-              <View key={c.id} style={[styles.historyCard, { backgroundColor: 'rgba(0,0,0,0.3)', borderColor: 'rgba(255,255,255,0.05)' }]}>
-                <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 }}>
-                  <TouchableOpacity onPress={() => {
-                    const targetKey = c.hexPubkey || c.pubkey;
-                    setShowDiscussion(false); setViewingAuthor(targetKey); setIsLoadingAuthor(true);
-                    fetchUserRides(targetKey).then(setAuthorRides).finally(() => setIsLoadingAuthor(false));
-                  }}>
-                    <Text style={{ color: '#00ffaa', fontSize: 12, fontWeight: 'bold', textDecorationLine: 'underline' }}>
-                      {profiles[c.hexPubkey || c.pubkey]?.nip05 || profiles[c.hexPubkey || c.pubkey]?.name || (c.hexPubkey || c.pubkey).substring(0, 10) + '...'}
-                    </Text>
-                  </TouchableOpacity>
-                  <Text style={{ color: '#888', fontSize: 12 }}>{new Date(c.createdAt * 1000).toLocaleDateString()}</Text>
+            {comments.length === 0 ? <Text style={styles.emptyText}>No comments yet. Be the first!</Text> : comments.map(c => {
+              const QUICK_C = ['🔥', '👍', '💪', '⚡'];
+              const commentReactions = reactions[c.id] || [];
+              const cp = profiles[c.hexPubkey || c.pubkey];
+              const cn = cp?.nip05 || cp?.name || (c.hexPubkey || c.pubkey).substring(0, 10) + '...';
+              const ca = cp?.picture;
+              return (
+                <View key={c.id} style={{ marginBottom: 12, backgroundColor: 'rgba(0,0,0,0.3)', borderRadius: 12, padding: 12, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' }}>
+                  {/* Author row */}
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                    <TouchableOpacity
+                      style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}
+                      onPress={() => {
+                        const targetKey = c.hexPubkey || c.pubkey;
+                        setShowDiscussion(false);
+                        setViewingAuthor(targetKey);
+                        setIsLoadingAuthor(true);
+                        fetchUserRides(targetKey).then(setAuthorRides).finally(() => setIsLoadingAuthor(false));
+                      }}
+                    >
+                      {ca
+                        ? <Image source={{ uri: ca }} style={{ width: 24, height: 24, borderRadius: 12 }} />
+                        : <View style={{ width: 24, height: 24, borderRadius: 12, backgroundColor: 'rgba(0,255,170,0.15)', alignItems: 'center', justifyContent: 'center' }}>
+                          <Text style={{ color: '#00ffaa', fontSize: 10, fontWeight: 'bold' }}>{cn.substring(0, 1).toUpperCase()}</Text>
+                        </View>
+                      }
+                      <Text style={{ color: '#00ffaa', fontSize: 12, fontWeight: 'bold' }}>{cn}</Text>
+                    </TouchableOpacity>
+                    <Text style={{ color: '#555', fontSize: 11 }}>{new Date(c.createdAt * 1000).toLocaleDateString([], { month: 'short', day: 'numeric' })}</Text>
+                  </View>
+                  {/* Content */}
+                  <Text style={{ color: '#eee', fontSize: 14, lineHeight: 20, marginBottom: 10 }}>{c.content}</Text>
+                  {/* Reaction counts */}
+                  {commentReactions.length > 0 && (
+                    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 5, marginBottom: 6 }}>
+                      {commentReactions.map(r => (
+                        <TouchableOpacity
+                          key={r.emoji}
+                          style={{ flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: r.reactedByMe ? 'rgba(0,255,170,0.15)' : 'rgba(255,255,255,0.07)', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 16, borderWidth: 1, borderColor: r.reactedByMe ? 'rgba(0,255,170,0.4)' : 'rgba(255,255,255,0.1)' }}
+                          onPress={async () => {
+                            if (r.reactedByMe && r.myReactionId) { await deleteReaction(r.myReactionId); }
+                            else { await publishReaction(c.id, c.hexPubkey || c.pubkey, r.emoji); }
+                            loadReactions(c.id);
+                          }}
+                        >
+                          <Text style={{ fontSize: 12 }}>{r.emoji}</Text>
+                          <Text style={{ color: r.reactedByMe ? '#00ffaa' : '#888', fontSize: 11, fontWeight: 'bold' }}>{r.count}</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                  )}
+                  {/* Quick-react bar */}
+                  <View style={{ flexDirection: 'row', gap: 4 }}>
+                    {QUICK_C.map(emoji => {
+                      const ex = commentReactions.find(r => r.emoji === emoji);
+                      return (
+                        <TouchableOpacity
+                          key={emoji}
+                          disabled={reactingId === c.id}
+                          style={{ paddingHorizontal: 7, paddingVertical: 3, borderRadius: 12, backgroundColor: ex?.reactedByMe ? 'rgba(0,255,170,0.15)' : 'rgba(255,255,255,0.05)', borderWidth: 1, borderColor: ex?.reactedByMe ? 'rgba(0,255,170,0.35)' : 'transparent' }}
+                          onPress={async () => {
+                            if (emoji === '⚡') {
+                              if (!isNWCConnected) { Alert.alert('Wallet Required', 'Connect your Lightning Wallet in Settings to send zaps.'); return; }
+                              const author = c.hexPubkey || c.pubkey;
+                              const displayName = profiles[author]?.nip05 || profiles[author]?.name || author.substring(0, 10) + '...';
+                              Alert.alert('⚡ Send Zap', `Zap ${displayName} 21 sats?`, [
+                                { text: 'Cancel', style: 'cancel' },
+                                {
+                                  text: 'Zap ⚡', onPress: async () => {
+                                    setReactingId(c.id);
+                                    try { await zapRideEvent(c.id, author, 1, 21, '⚡ Great comment!'); Alert.alert('⚡ Zapped!', `21 sats sent to ${displayName}!`); }
+                                    catch (e: any) { Alert.alert('Zap Failed', e.message || 'Unknown error'); }
+                                    setReactingId(null);
+                                  }
+                                },
+                              ]);
+                              return;
+                            }
+                            setReactingId(c.id);
+                            if (ex?.reactedByMe && ex.myReactionId) { await deleteReaction(ex.myReactionId); }
+                            else { await publishReaction(c.id, c.hexPubkey || c.pubkey, emoji); }
+                            await loadReactions(c.id);
+                            setReactingId(null);
+                          }}
+                        >
+                          <Text style={{ fontSize: 13 }}>{emoji}</Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
                 </View>
-                <Text style={{ color: '#eee', fontSize: 14 }}>{c.content}</Text>
-              </View>
-            ))}
+              );
+            })}
           </ScrollView>
           <View style={{ flexDirection: 'row', gap: 10, marginTop: 12, alignItems: 'center' }}>
             <TextInput style={[styles.keyInput, { flex: 1, marginBottom: 0 }]} placeholder="Write a comment..." placeholderTextColor="rgba(255,255,255,0.3)" value={newComment} onChangeText={setNewComment} editable={!isPublishingComment} />
@@ -2627,6 +3233,124 @@ export default function App() {
         </KeyboardAvoidingView>
       )}
 
+
+      {/* Discussion Overlay */}
+      {showDiscussion && selectedDiscussionRide && (
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={[styles.historyOverlay, { zIndex: 1000 }]}>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+            <Text style={styles.historyTitle}>Discussion</Text>
+            <TouchableOpacity onPress={() => { setShowDiscussion(false); setSelectedDiscussionRide(null); setDiscussionFromSocial(false); }} style={{ padding: 4 }}><X size={24} color="#fff" /></TouchableOpacity>
+          </View>
+          <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
+            {comments.length === 0 ? <Text style={styles.emptyText}>No comments yet. Be the first!</Text> : comments.map(c => {
+              const QUICK_C = ['🔥', '👍', '💪', '⚡'];
+              const commentReactions = reactions[c.id] || [];
+              const cp = profiles[c.hexPubkey || c.pubkey];
+              const cn = cp?.nip05 || cp?.name || (c.hexPubkey || c.pubkey).substring(0, 10) + '...';
+              const ca = cp?.picture;
+              return (
+                <View key={c.id} style={{ marginBottom: 12, backgroundColor: 'rgba(0,0,0,0.3)', borderRadius: 12, padding: 12, borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)' }}>
+                  {/* Author row */}
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                    <TouchableOpacity
+                      style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}
+                      onPress={() => {
+                        const targetKey = c.hexPubkey || c.pubkey;
+                        setShowDiscussion(false);
+                        setViewingAuthor(targetKey);
+                        setIsLoadingAuthor(true);
+                        fetchUserRides(targetKey).then(setAuthorRides).finally(() => setIsLoadingAuthor(false));
+                      }}
+                    >
+                      {ca
+                        ? <Image source={{ uri: ca }} style={{ width: 24, height: 24, borderRadius: 12 }} />
+                        : <View style={{ width: 24, height: 24, borderRadius: 12, backgroundColor: 'rgba(0,255,170,0.15)', alignItems: 'center', justifyContent: 'center' }}>
+                          <Text style={{ color: '#00ffaa', fontSize: 10, fontWeight: 'bold' }}>{cn.substring(0, 1).toUpperCase()}</Text>
+                        </View>
+                      }
+                      <Text style={{ color: '#00ffaa', fontSize: 12, fontWeight: 'bold' }}>{cn}</Text>
+                    </TouchableOpacity>
+                    <Text style={{ color: '#555', fontSize: 11 }}>{new Date(c.createdAt * 1000).toLocaleDateString([], { month: 'short', day: 'numeric' })}</Text>
+                  </View>
+                  {/* Content */}
+                  <Text style={{ color: '#eee', fontSize: 14, lineHeight: 20, marginBottom: 10 }}>{c.content}</Text>
+                  {/* Reaction counts */}
+                  {commentReactions.length > 0 && (
+                    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 5, marginBottom: 6 }}>
+                      {commentReactions.map(r => (
+                        <TouchableOpacity
+                          key={r.emoji}
+                          style={{ flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: r.reactedByMe ? 'rgba(0,255,170,0.15)' : 'rgba(255,255,255,0.07)', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 16, borderWidth: 1, borderColor: r.reactedByMe ? 'rgba(0,255,170,0.4)' : 'rgba(255,255,255,0.1)' }}
+                          onPress={async () => {
+                            if (r.reactedByMe && r.myReactionId) { await deleteReaction(r.myReactionId); }
+                            else { await publishReaction(c.id, c.hexPubkey || c.pubkey, r.emoji); }
+                            loadReactions(c.id);
+                          }}
+                        >
+                          <Text style={{ fontSize: 12 }}>{r.emoji}</Text>
+                          <Text style={{ color: r.reactedByMe ? '#00ffaa' : '#888', fontSize: 11, fontWeight: 'bold' }}>{r.count}</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                  )}
+                  {/* Quick-react bar */}
+                  <View style={{ flexDirection: 'row', gap: 4 }}>
+                    {QUICK_C.map(emoji => {
+                      const ex = commentReactions.find(r => r.emoji === emoji);
+                      return (
+                        <TouchableOpacity
+                          key={emoji}
+                          disabled={reactingId === c.id}
+                          style={{ paddingHorizontal: 7, paddingVertical: 3, borderRadius: 12, backgroundColor: ex?.reactedByMe ? 'rgba(0,255,170,0.15)' : 'rgba(255,255,255,0.05)', borderWidth: 1, borderColor: ex?.reactedByMe ? 'rgba(0,255,170,0.35)' : 'transparent' }}
+                          onPress={async () => {
+                            if (emoji === '⚡') {
+                              if (!isNWCConnected) { Alert.alert('Wallet Required', 'Connect your Lightning Wallet in Settings to send zaps.'); return; }
+                              const author = c.hexPubkey || c.pubkey;
+                              const displayName = profiles[author]?.nip05 || profiles[author]?.name || author.substring(0, 10) + '...';
+                              Alert.alert('⚡ Send Zap', `Zap ${displayName} 21 sats?`, [
+                                { text: 'Cancel', style: 'cancel' },
+                                {
+                                  text: 'Zap ⚡', onPress: async () => {
+                                    setReactingId(c.id);
+                                    try { await zapRideEvent(c.id, author, 1, 21, '⚡ Great comment!'); Alert.alert('⚡ Zapped!', `21 sats sent to ${displayName}!`); }
+                                    catch (e: any) { Alert.alert('Zap Failed', e.message || 'Unknown error'); }
+                                    setReactingId(null);
+                                  }
+                                },
+                              ]);
+                              return;
+                            }
+                            setReactingId(c.id);
+                            if (ex?.reactedByMe && ex.myReactionId) { await deleteReaction(ex.myReactionId); }
+                            else { await publishReaction(c.id, c.hexPubkey || c.pubkey, emoji); }
+                            await loadReactions(c.id);
+                            setReactingId(null);
+                          }}
+                        >
+                          <Text style={{ fontSize: 13 }}>{emoji}</Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                </View>
+              );
+            })}
+          </ScrollView>
+          <View style={{ flexDirection: 'row', gap: 10, marginTop: 12, alignItems: 'center' }}>
+            <TextInput style={[styles.keyInput, { flex: 1, marginBottom: 0 }]} placeholder="Write a comment..." placeholderTextColor="rgba(255,255,255,0.3)" value={newComment} onChangeText={setNewComment} editable={!isPublishingComment} />
+            <TouchableOpacity style={{ backgroundColor: '#00ffaa', paddingHorizontal: 16, paddingVertical: 12, borderRadius: 8 }} disabled={isPublishingComment || !newComment.trim()} onPress={async () => {
+              if (!newComment.trim()) return;
+              setIsPublishingComment(true);
+              const success = await publishComment(selectedDiscussionRide.id, newComment.trim());
+              if (success) { setNewComment(''); fetchComments(selectedDiscussionRide.id).then(fetched => { setComments(fetched); loadAuthorProfiles(fetched.map(c => c.hexPubkey || c.pubkey)).catch(console.error); }); }
+              else Alert.alert("Error", "Failed to publish comment");
+              setIsPublishingComment(false);
+            }}>
+              <Text style={{ color: '#000', fontWeight: 'bold' }}>{isPublishingComment ? '...' : 'POST'}</Text>
+            </TouchableOpacity>
+          </View>
+        </KeyboardAvoidingView>
+      )}
       {/* DM Overlay */}
       {activeDMUser && (
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={[styles.historyOverlay, { zIndex: 1000 }]}>

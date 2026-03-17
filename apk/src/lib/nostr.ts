@@ -1,17 +1,18 @@
 import 'react-native-get-random-values';
 import { TextEncoder, TextDecoder } from 'text-encoding';
-import NDK, { NDKNip07Signer, NDKEvent, NDKPrivateKeySigner, NDKUser, NDKZapper, NDKBlossomList } from "@nostr-dev-kit/ndk";
-import { NDKBlossom } from "@nostr-dev-kit/ndk-blossom";
-import type { NDKFilter } from "@nostr-dev-kit/ndk";
+import NDK, { NDKNip07Signer, NDKEvent, NDKPrivateKeySigner, NDKUser, NDKZapper, NDKFilter, NDKSubscription } from "@nostr-dev-kit/ndk";
+import type { SHA256Calculator } from "@nostr-dev-kit/ndk-blossom";
 // @ts-ignore - Types missing upstream
 import { NDKNWCWallet } from "@nostr-dev-kit/ndk-wallet";
 import * as SecureStore from 'expo-secure-store';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as ImageManipulator from 'expo-image-manipulator';
-import * as FileSystem from 'expo-file-system/legacy';
 import { generateSecretKey, getPublicKey, nip19 } from 'nostr-tools';
 import { Buffer } from 'buffer';
 import * as Crypto from 'expo-crypto';
-import type { SHA256Calculator } from "@nostr-dev-kit/ndk-blossom";
+
+
+export const BIKEL_GLOBAL_CHANNEL_ID = "0fff30d212cd17652df10f9ef9dc8881a74d07d6cfb9c565ace32ba2eb519bd7";
 
 /**
  * Custom SHA256 calculator for React Native using expo-crypto.
@@ -59,7 +60,41 @@ export const DEFAULT_RELAYS = [
     'wss://relay.damus.io',
     'wss://relay.primal.net',
     'wss://nos.lol',
+    'wss://relay.nostr.wine',   // NIP-50 search supported
+    'wss://offchain.pub',
+    'wss://purplepag.es',
+    'wss://relay.snort.social',
 ];
+
+// Relays that support NIP-50 full-text search (search field in REQ filters).
+// These are added to the pool specifically for fetchAllBikelSocial search queries.
+// Regular relays silently ignore the search field, so it's safe to include both.
+export const NIP50_RELAYS = [
+    'wss://relay.nostr.band',   // Best NIP-50 support, large index
+    'wss://relay.nostr.wine',   // Also supports NIP-50
+    'wss://noswhere.com',       // Amethyst default NIP-50 relay
+];
+
+export const RELAYS_STORAGE_KEY = 'bikel_custom_relays';
+
+export async function getRelays(): Promise<string[]> {
+    try {
+        const stored = await AsyncStorage.getItem(RELAYS_STORAGE_KEY);
+        if (stored) {
+            const parsed = JSON.parse(stored);
+            if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        }
+    } catch (e) { console.error('[Nostr] Failed to load custom relays:', e); }
+    return DEFAULT_RELAYS;
+}
+
+export async function saveRelays(relays: string[]): Promise<void> {
+    try {
+        await AsyncStorage.setItem(RELAYS_STORAGE_KEY, JSON.stringify(relays));
+        // Reset NDK instance to force reconnect with new relays next time
+        globalNdk = null;
+    } catch (e) { console.error('[Nostr] Failed to save custom relays:', e); }
+}
 
 export const ESCROW_PUBKEY = "cc130b7120d00ded76d065bf0bd27e3a36a38d5268208078a1e99aa29ac44adf";
 
@@ -93,27 +128,60 @@ export async function getSigner(): Promise<NDKPrivateKeySigner> {
  * Initializes and connects to the global NDK instance.
  */
 export async function connectNDK(): Promise<NDK> {
-    if (globalNdk) return globalNdk;
+    if (globalNdk && globalNdk.pool.connectedRelays().length > 0) return globalNdk;
 
+    console.log('[Nostr] Initializing NDK...');
     const signer = await getSigner();
 
-    globalNdk = new NDK({
-        explicitRelayUrls: DEFAULT_RELAYS,
-        signer,
-    });
+    if (!globalNdk) {
+        const relays = await getRelays();
+        console.log(`[Nostr] Initializing NDK with relays: ${relays.join(', ')}`);
+        globalNdk = new NDK({
+            explicitRelayUrls: relays,
+            signer,
+        });
+    }
+
+    // If already connected, just return
+    if (globalNdk.pool.connectedRelays().length > 0) return globalNdk;
 
     console.log('[Nostr] Connecting to relays...');
-    await globalNdk.connect().catch(e => console.error('[Nostr] Connection error:', e));
-    // connect() resolves before relays finish the WebSocket handshake.
-    // Wait for at least one relay to be ready before returning, max 3s.
+    try {
+        await globalNdk.connect(2000); // 2s timeout for primary connection
+    } catch (e) {
+        console.warn('[Nostr] Initial connect timeout/error, will check pool...');
+    }
+
+    // Wait for at least one relay to be ready before returning, max 8s total
     await new Promise<void>(resolve => {
         let resolved = false;
         const done = () => { if (!resolved) { resolved = true; resolve(); } };
-        globalNdk!.pool.on('relay:ready', done);
-        setTimeout(done, 3000);
-    });
-    console.log('[Nostr] Connected.');
 
+        // Success condition: at least one relay connected
+        const check = () => {
+            if (globalNdk?.pool.connectedRelays().length && globalNdk.pool.connectedRelays().length > 0) {
+                done();
+            } else if (!resolved) {
+                setTimeout(check, 1000);
+            }
+        };
+
+        globalNdk!.pool.on('relay:ready', () => {
+            console.log('[Nostr] Relay ready event received');
+            done();
+        });
+
+        setTimeout(check, 1000);
+        setTimeout(() => {
+            if (!resolved) {
+                console.warn('[Nostr] All relay connection attempts timed out. Returning partially-connected NDK.');
+                done();
+            }
+        }, 8000);
+    });
+
+    const count = globalNdk.pool.connectedRelays().length;
+    console.log(`[Nostr] Connection attempt finished. Pool size: ${count}`);
     return globalNdk;
 }
 
@@ -121,27 +189,42 @@ export async function connectNDK(): Promise<NDK> {
  * Fetches events with a timeout, returning whatever was collected if the timeout is reached.
  */
 async function fetchEventsWithTimeout(ndk: NDK, filters: NDKFilter[], timeoutMs: number): Promise<Set<NDKEvent>> {
-    const events = new Set<NDKEvent>();
-    return new Promise((resolve) => {
-        let resolved = false;
-        const sub = ndk.subscribe(filters, { closeOnEose: true });
+    const merged = new Set<NDKEvent>();
+    if (filters.length === 0) return merged;
 
-        const done = () => {
-            if (!resolved) {
-                resolved = true;
-                sub.stop();
-                resolve(events);
-            }
-        };
+    // Track EOSE per subscription — resolve early once all subs have hit EOSE
+    let eoseCount = 0;
+    let resolved = false;
+    let resolveFn: () => void;
 
-        sub.on("event", (event: NDKEvent) => {
-            events.add(event);
+    const done = () => {
+        if (!resolved) {
+            resolved = true;
+            resolveFn();
+        }
+    };
+
+    const promise = new Promise<void>(resolve => { resolveFn = resolve; });
+
+    const subs = filters.map(filter => {
+        const sub = ndk.subscribe([filter], { closeOnEose: false });
+        sub.on('event', (ev: NDKEvent) => merged.add(ev));
+        sub.on('eose', () => {
+            eoseCount++;
+            // Resolve as soon as every subscription has received EOSE from at least one relay.
+            // This lets us return in ~1-2s on a good connection instead of waiting the full timeout.
+            if (eoseCount >= filters.length) done();
         });
-
-        sub.on("eose", done);
-
-        setTimeout(done, timeoutMs);
+        return sub;
     });
+
+    // Hard timeout as fallback — catches slow/unresponsive relays
+    const timer = setTimeout(done, timeoutMs);
+
+    await promise;
+    clearTimeout(timer);
+    subs.forEach(s => { try { s.stop(); } catch (_) { } });
+    return merged;
 }
 
 /**
@@ -180,6 +263,82 @@ export function calculateRideConfidence(distanceMiles: number, durationSeconds: 
 }
 
 /**
+ * Publishes a Kind 1 note quoting or referencing a ride.
+ */
+export async function publishSocialNote(content: string, rideEventId?: string) {
+    const ndk = await connectNDK();
+    const event = new NDKEvent(ndk);
+    event.kind = 1;
+    event.content = content;
+    event.tags = [
+        ['client', 'bikel'],
+        ['t', 'bikel'],
+        ['t', 'cycling']
+    ];
+    if (rideEventId) {
+        event.tags.push(['e', rideEventId, '', 'mention']);
+    }
+    console.log('[Nostr] Publishing social note...');
+    await event.publish();
+    return event.id;
+}
+
+/**
+ * Publishes a Kind 42 Channel Message (NIP-28) to the Bikel Room.
+ */
+export async function publishChannelMessage(content: string, rideEventId?: string) {
+    const ndk = await connectNDK();
+    const event = new NDKEvent(ndk);
+    event.kind = 42;
+    event.content = content;
+    event.tags = [
+        ['e', BIKEL_GLOBAL_CHANNEL_ID, '', 'root'],
+        ['client', 'bikel'],
+        ['t', 'bikel']
+    ];
+    if (rideEventId) {
+        // Tag the ride event for clickable references
+        event.tags.push(['e', rideEventId, '', 'mention']);
+    }
+    console.log('[Nostr] Publishing channel message...');
+    await event.publish();
+    return event.id;
+}
+
+/**
+ * Fetches recent Kind 42 messages for the Bikel Global Room.
+ */
+export async function fetchChannelMessages(limit = 50): Promise<NDKEvent[]> {
+    const ndk = await connectNDK();
+    const filter: NDKFilter = {
+        kinds: [42],
+        '#e': [BIKEL_GLOBAL_CHANNEL_ID],
+        limit
+    };
+    console.log(`[Nostr] Fetching channel messages for ${BIKEL_GLOBAL_CHANNEL_ID}...`);
+    const events = await fetchEventsWithTimeout(ndk, [filter], 12000);
+    // Sort chronologically (oldest first) for a standard chat room experience.
+    return Array.from(events).sort((a, b) => (a.created_at || 0) - (b.created_at || 0));
+}
+
+/**
+ * Creates a new NIP-28 Public Channel (Kind 40).
+ * Run this once to establish the Bikel Global Room.
+ */
+export async function createBikelChannel(name = "Bikel Global", about = "The official public square for Bikel riders on Nostr.", picture = "") {
+    const ndk = await connectNDK();
+    const event = new NDKEvent(ndk);
+    event.kind = 40;
+    event.content = JSON.stringify({
+        name,
+        about,
+        picture
+    });
+    console.log('[Nostr] Creating channel...');
+    await event.publish();
+    return event.id;
+}
+/**
  * Publishes a completed ride to Nostr as Kind 33301.
  */
 export async function publishRide(
@@ -196,7 +355,6 @@ export async function publishRide(
 ) {
     const ndk = await connectNDK();
     const event = new NDKEvent(ndk);
-    event.kind = 33301;
 
     const confidence = overrideConfidence !== undefined
         ? overrideConfidence
@@ -207,9 +365,12 @@ export async function publishRide(
     const secs = durationSeconds % 60;
     const durationStr = `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
 
+    event.kind = 33301;
     event.tags = [
         ['d', Date.now().toString()],
-        ['distance', distanceMiles.toFixed(2)],
+        ['title', title || "Bikel Ride"],
+        ['exercise', 'cycling'],
+        ['distance', distanceMiles.toFixed(2), 'mi'],
         ['duration', durationStr],
         ['visibility', visibility],
         ['confidence', confidence.toFixed(2)],
@@ -219,8 +380,10 @@ export async function publishRide(
         ['t', 'bikeride'],
         ['t', 'fitness']
     ];
-    if (elevation !== undefined) event.tags.push(['elevation', elevation.toString()]);
-    if (title) event.tags.push(['title', title]);
+    if (elevation !== undefined) {
+        event.tags.push(['elevation', elevation.toString()]);
+        event.tags.push(['elevation_gain', elevation.toString(), 'ft']);
+    }
     if (description) event.tags.push(['summary', description]);
     if (image) event.tags.push(['image', image]);
 
@@ -231,7 +394,8 @@ export async function publishRide(
             .map(p => [Number(p.lat.toFixed(6)), Number(p.lng.toFixed(6))]);
 
         if (onLog) onLog(`[Nostr] Compressed ${routePoints.length} points down to ${compressedGeo.length} (Step: ${step})`);
-        // "Clean Break": Move JSON to a specific tag 'route' (renamed from 'g' to avoid relay geohash filters)
+
+        // Bikel-specific route data
         event.tags.push(['route', JSON.stringify({ route: compressedGeo })]);
     }
 
@@ -438,12 +602,12 @@ function parseRideEvent(event: NDKEvent): RideEvent | null {
             event.content.toLowerCase().includes("cycling") ||
             event.content.toLowerCase().includes("bike");
 
-        // Strict filter: If it's Kind 1 or 1301, it MUST have cycling context
-        if ((event.kind === 1 || event.kind === 1301) && !hasCyclingContext) return null;
-
-        // Skip empty stats if not native bikel
+        // Strict filter: If it's Kind 1 or 1301, it MUST have cycling context OR be from Bikel client
         const client = event.getMatchingTags("client")[0]?.[1];
         const isBikel = client === 'bikel';
+        if ((event.kind === 1 || event.kind === 1301) && !hasCyclingContext && !isBikel) return null;
+
+        // Skip empty stats if not native bikel
         if (!isBikel && distanceMiles === 0 && durationSecs === 0) return null;
 
         let description = event.getMatchingTags("summary")[0]?.[1] || event.getMatchingTags("description")[0]?.[1];
@@ -457,7 +621,7 @@ function parseRideEvent(event: NDKEvent): RideEvent | null {
         const mins = durationSecs >= 3600 ? Math.floor((durationSecs % 3600) / 60) : Math.floor(durationSecs / 60);
         const secs = durationSecs % 60;
 
-        const elevation = event.getMatchingTags("elevation")[0]?.[1];
+        const elevation = event.getMatchingTags("elevation")[0]?.[1] || event.getMatchingTags("elevation_gain")[0]?.[1];
 
         let route: number[][] = [];
         if (visibility === 'full') {
@@ -468,15 +632,23 @@ function parseRideEvent(event: NDKEvent): RideEvent | null {
             if (rawRouteData) {
                 try {
                     const parsed = JSON.parse(rawRouteData);
-                    if (parsed.route && Array.isArray(parsed.route)) route = parsed.route;
+                    if (Array.isArray(parsed)) {
+                        route = parsed;
+                    } else if (parsed && parsed.route && Array.isArray(parsed.route)) {
+                        route = parsed.route;
+                    }
                 } catch (e) { }
             }
             if (route.length === 0 && event.content && event.content.includes('"route"')) {
                 try {
-                    const jsonMatch = event.content.match(/\{.*"route"\s*:.*?\}/s);
+                    const jsonMatch = event.content.match(/\{.*?"route"\s*:.*?\}/s);
                     const jsonToParse = jsonMatch ? jsonMatch[0] : event.content;
                     const parsed = JSON.parse(jsonToParse);
-                    if (parsed.route && Array.isArray(parsed.route)) route = parsed.route;
+                    if (Array.isArray(parsed)) {
+                        route = parsed;
+                    } else if (parsed && parsed.route && Array.isArray(parsed.route)) {
+                        route = parsed.route;
+                    }
                 } catch (e) { }
             }
         }
@@ -507,6 +679,14 @@ function parseRideEvent(event: NDKEvent): RideEvent | null {
     }
 }
 
+export async function fetchRideById(id: string): Promise<RideEvent | null> {
+    const ndk = await connectNDK();
+    const filter: NDKFilter = { ids: [id], kinds: [1, 1301 as any, 33301 as any] };
+    const events = await fetchEventsWithTimeout(ndk, [filter], 5000);
+    if (events.size === 0) return null;
+    return parseRideEvent(Array.from(events)[0]);
+}
+
 export async function fetchMyRides(): Promise<RideEvent[]> {
     const ndk = await connectNDK();
     const signer = await getSigner();
@@ -518,7 +698,7 @@ export async function fetchMyRides(): Promise<RideEvent[]> {
     ];
 
     console.log('[Nostr] Fetching personal ride history...');
-    const events = await fetchEventsWithTimeout(ndk, filters, 8000);
+    const events = await fetchEventsWithTimeout(ndk, filters, 5000);
     const ridesMap = new Map<string, RideEvent>();
 
     for (const event of events) {
@@ -653,11 +833,15 @@ export interface ContestEvent {
 export async function fetchRecentRides(): Promise<RideEvent[]> {
     const ndk = await connectNDK();
     const filters: NDKFilter[] = [
+        // Simple kind-only filters — relays handle these reliably without tag indexing
         { kinds: [33301 as any, 1301 as any], limit: 100 },
-        { kinds: [1 as any], "#t": ["RUNSTR", "cycling", "fitness", "bikel"], limit: 50 }
+        // '#t' is a NIP-12 standard indexed tag — relays support this
+        { kinds: [1 as any], '#t': ['bikel'], limit: 50 },
+        { kinds: [1 as any], '#t': ['cycling'], limit: 50 },
+        // NOTE: '#client' is NOT a standard indexed tag — removed, returns empty on all relays
     ];
     console.log("[Nostr] Fetching recent Bikel & Runstr rides...");
-    const events = await fetchEventsWithTimeout(ndk, filters, 8000);
+    const events = await fetchEventsWithTimeout(ndk, filters, 5000);
     console.log(`[Nostr] Fetched ${events.size} raw events, filtering locally...`);
 
     const ridesMap = new Map<string, RideEvent>();
@@ -670,14 +854,18 @@ export async function fetchRecentRides(): Promise<RideEvent[]> {
             event.getMatchingTags("client").some(t => t[1].toUpperCase() === "RUNSTR") ||
             event.getMatchingTags("t").some(t => t[1].toUpperCase() === "RUNSTR");
 
-        if (event.kind !== 33301 && event.kind !== 1301 && !isRunstr) continue;
+        if (event.kind !== 33301 && event.kind !== 1301 && event.kind !== 1 && !isRunstr) continue;
         if (!hasBikelClient && !hasCyclingTag && !isRunstr) continue;
 
         const parsed = parseRideEvent(event);
+        if (!parsed) continue;
 
-        if (parsed && (parsed.route.length > 0 || hasBikelClient || isRunstr)) {
+        // Strict filter for Kind 1: Must have a route to be considered a "Ride" for the map
+        if (event.kind === 1 && parsed.route.length === 0) continue;
+
+        if (parsed.route.length > 0 || hasBikelClient || isRunstr) {
             // Filter noise: empty external posts
-            if (isRunstr && parsed.distance === "0.00" && parsed.duration === "0m 0s") continue;
+            if (isRunstr && (parsed.distance === "0.00" || parsed.distance === "0") && parsed.duration === "0m 0s") continue;
 
             const dTag = event.getMatchingTags("d")[0]?.[1] || "";
             const key = dTag ? `${event.pubkey}-${dTag}` : event.id;
@@ -980,6 +1168,14 @@ export interface RideComment {
     hexPubkey?: string;
     content: string;
     createdAt: number;
+    rideId?: string;
+    title?: string;
+    isRide?: boolean;
+    image?: string;
+    distance?: string;
+    duration?: string;
+    kind?: number;
+    hasRoute?: boolean;
 }
 
 export async function fetchComments(eventId: string): Promise<RideComment[]> {
@@ -1013,9 +1209,232 @@ export async function publishComment(eventId: string, content: string): Promise<
     const event = new NDKEvent(ndk);
     event.kind = 1;
     event.content = content;
-    event.tags = [['e', eventId, '', 'reply'], ['client', 'bikel']];
+    event.tags = [['e', eventId, '', 'reply'], ['client', 'bikel'], ['t', 'bikel']];
     try { await event.publish(); return true; } catch (e) { console.error("[Nostr - Mobile] Failed to publish comment", e); return false; }
 }
+
+/**
+ * Fetches all recent Bikel-related social activity (Kind 1 notes and comments).
+ */
+
+// ── NIP-25 Emoji Reactions ─────────────────────────────────────────────────
+
+export interface ReactionSummary {
+    emoji: string;
+    count: number;
+    reactedByMe: boolean;
+    myReactionId?: string;
+}
+
+export async function fetchReactions(eventId: string): Promise<ReactionSummary[]> {
+    const ndk = await connectNDK();
+    const signer = await getSigner();
+    const me = await signer.user();
+    const events = await fetchEventsWithTimeout(ndk, [{ kinds: [7 as any], '#e': [eventId], limit: 200 }], 5000);
+    const counts = new Map<string, { count: number; reactedByMe: boolean; myReactionId?: string }>();
+    for (const ev of events) {
+        const emoji = ev.content || '👍';
+        const existing = counts.get(emoji) || { count: 0, reactedByMe: false };
+        const isMine = ev.pubkey === me.pubkey;
+        counts.set(emoji, {
+            count: existing.count + 1,
+            reactedByMe: existing.reactedByMe || isMine,
+            myReactionId: isMine ? ev.id : existing.myReactionId,
+        });
+    }
+    return Array.from(counts.entries())
+        .map(([emoji, data]) => ({ emoji, ...data }))
+        .sort((a, b) => b.count - a.count);
+}
+
+export async function publishReaction(eventId: string, authorPubkey: string, emoji: string): Promise<boolean> {
+    const ndk = await connectNDK();
+    if (!ndk.signer) return false;
+    const event = new NDKEvent(ndk);
+    event.kind = 7;
+    event.content = emoji;
+    event.tags = [['e', eventId], ['p', authorPubkey], ['client', 'bikel']];
+    try { await event.publish(); return true; } catch (e) { console.error('[Nostr] Failed to publish reaction', e); return false; }
+}
+
+export async function deleteReaction(reactionId: string): Promise<boolean> {
+    const ndk = await connectNDK();
+    if (!ndk.signer) return false;
+    const event = new NDKEvent(ndk);
+    event.kind = 5;
+    event.content = 'deleted';
+    event.tags = [['e', reactionId], ['k', '7']];
+    try { await event.publish(); return true; } catch (e) { return false; }
+}
+
+
+export async function fetchAllBikelSocial(rideIds: string[] = [], limit = 50): Promise<RideComment[]> {
+    const ndk = await connectNDK();
+
+    // Hashtag filters — work on all standard relays
+    const filters: NDKFilter[] = [
+        { kinds: [1 as any], '#t': ['bikel'], limit: 100 },
+        { kinds: [1 as any], '#t': ['bikeride'], limit: 50 },
+        { kinds: [1 as any], '#t': ['fixie'], limit: 50 },
+        { kinds: [1 as any], '#t': ['biketour'], limit: 50 },
+        { kinds: [1 as any], '#t': ['mountainbike'], limit: 50 },
+        { kinds: [1 as any], '#t': ['cycling'], limit: 50 },
+        { kinds: [1 as any], '#t': ['bike'], limit: 50 },
+        { kinds: [1 as any], '#t': ['bicycle'], limit: 50 },
+        { kinds: [1301 as any], limit: 60 },
+    ];
+
+    // NIP-50 full-text search filters — sent to NIP50_RELAYS via a dedicated NDK pool.
+    // The 'search' field is ignored by relays that don't support NIP-50, so it's safe.
+    // We use separate subscriptions targeting only NIP-50 relays to avoid timeouts on
+    // standard relays that don't understand search.
+    const searchTerms = ['bicycle', 'fixie', 'cycling', 'biking', 'bike ride'];
+    const searchFilters: NDKFilter[] = searchTerms.map(term => ({
+        kinds: [1 as any],
+        search: term,
+        limit: 30,
+    } as any));
+
+    if (rideIds.length > 0) {
+        const chunks: string[][] = [];
+        for (let i = 0; i < Math.min(rideIds.length, 24); i += 8) {
+            chunks.push(rideIds.slice(i, i + 8));
+        }
+        chunks.forEach(chunk => filters.push({ kinds: [1 as any], '#e': chunk, limit: 50 }));
+    }
+
+    console.log(`[Nostr] Fetching social activity...`);
+
+    // Run hashtag fetch and NIP-50 search fetch in parallel
+    const [hashtagEvents, searchEvents] = await Promise.all([
+        fetchEventsWithTimeout(ndk, filters, 10000),
+        (async () => {
+            try {
+                // Connect a small pool to only NIP-50 relays for the search queries
+                const searchNdk = new NDK({
+                    explicitRelayUrls: NIP50_RELAYS,
+                    signer: ndk.signer,
+                });
+                await searchNdk.connect(1500);
+                // Give relays 1.5s to connect, then fire search queries with 4s timeout
+                await new Promise(r => setTimeout(r, 1500));
+                return await fetchEventsWithTimeout(searchNdk, searchFilters, 4000);
+            } catch (e) {
+                console.warn('[Social] NIP-50 search failed (non-fatal):', e);
+                return new Set<NDKEvent>();
+            }
+        })(),
+    ]);
+
+    // Merge both result sets
+    const allEvents = new Set<NDKEvent>([...hashtagEvents, ...searchEvents]);
+    console.log(`[Nostr] Social: ${hashtagEvents.size} hashtag + ${searchEvents.size} search = ${allEvents.size} total`);
+
+    const uniqueMap = new Map<string, RideComment>();
+    allEvents.forEach(e => {
+        if (uniqueMap.has(e.id)) return;
+
+        const isRide = e.kind === 1301 || e.kind === 33301;
+        const isBikelClient = e.getMatchingTags('client').some(t => t[1] === 'bikel');
+        const hasBikelTag = e.getMatchingTags('t').some(t => ['bikel', 'bikeride', 'fixie', 'biketour', 'cycling', 'bicycle', 'bike', 'mountainbike', 'fixedgear', 'fixedgearbike', 'fixedgearbicycle', 'bikepacking', 'gravel', 'mtb', 'roadbike', 'cyclinglife', 'cyclist', 'velo'].includes(t[1].toLowerCase()));
+
+        // For ride events: only include bikel-tagged to exclude RunSTR walking workouts
+        if (isRide && !hasBikelTag) return;
+
+        const referencedEventId = e.tags.find(t => t[0] === 'e')?.[1] || '';
+        const fromSearch = searchEvents.has(e);
+
+        // For kind-1 posts: need a bikel tag, or an #e ref to a ride, or came from search
+        if (!isRide && !hasBikelTag && !referencedEventId && !fromSearch) return;
+
+        // Skip very short content (spam/bots)
+        if (!isRide && e.content.trim().length < 5) return;
+
+        // For search results: verify content actually contains bike keywords
+        if (fromSearch && !hasBikelTag) {
+            const contentLower = e.content.toLowerCase();
+            const hasBikeWord = ['bicycle', 'fixie', 'cycling', 'bike', 'biking', 'cyclist', 'velodrome', 'peloton'].some(w => contentLower.includes(w));
+            if (!hasBikeWord) return;
+        }
+
+        // Extract rich data from events
+        let displayContent = e.content;
+        let rideTitle = '';
+        let image: string | undefined;
+        let distance: string | undefined;
+        let duration: string | undefined;
+
+        // Extract image from any event type: 'image' tag, 'imeta' tag, or URL in content
+        image = e.getMatchingTags('image')[0]?.[1];
+        if (!image) {
+            const imeta = e.getMatchingTags('imeta')[0];
+            if (imeta) {
+                const urlEntry = imeta.find((t: string) => t.startsWith('url '));
+                if (urlEntry) image = urlEntry.substring(4);
+            }
+        }
+        if (!image) {
+            const urlMatch = e.content.match(
+                /https?:\/\/\S+\.(jpg|jpeg|png|webp|gif)|https?:\/\/(image\.nostr\.build|nostr\.build|void\.cat|i\.imgur|cdn\.satellite\.earth)\S*/i
+            );
+            if (urlMatch) image = urlMatch[0];
+        }
+
+        // For kind-1 posts: strip lines that are only a URL (Mostr/bridge posts put source
+        // URL as first line — remove it so the actual post text shows in the card)
+        if (!isRide) {
+            const cleaned = e.content.split('\n')
+                .filter((line: string) => !/^https?:\/\/\S+$/.test(line.trim()))
+                .join('\n')
+                .trim();
+            displayContent = cleaned.length > 0 ? cleaned : e.content;
+        }
+
+        if (isRide) {
+            rideTitle = e.getMatchingTags('title')[0]?.[1] || '';
+            image = e.getMatchingTags('image')[0]?.[1] || image;
+            distance = e.getMatchingTags('distance')[0]?.[1];
+            const durationRaw = e.getMatchingTags('duration')[0]?.[1];
+            if (durationRaw) {
+                const secs = parseInt(durationRaw, 10);
+                if (!isNaN(secs)) {
+                    const h = Math.floor(secs / 3600);
+                    const m = Math.floor((secs % 3600) / 60);
+                    duration = h > 0 ? `${h}h ${m}m` : `${m}m`;
+                } else {
+                    duration = durationRaw;
+                }
+            }
+            if (!e.content || e.content.startsWith('{')) {
+                displayContent = rideTitle
+                    ? `${rideTitle}`
+                    : distance ? `Rode ${parseFloat(distance).toFixed(1)} miles` : 'Shared a ride 🚲';
+            }
+        }
+
+        uniqueMap.set(e.id, {
+            id: e.id,
+            pubkey: e.pubkey,
+            hexPubkey: e.pubkey,
+            content: displayContent,
+            createdAt: e.created_at || 0,
+            rideId: isRide ? e.id : referencedEventId,
+            title: rideTitle || undefined,
+            isRide,
+            image,
+            distance,
+            duration,
+            kind: e.kind,
+            hasRoute: isRide && (
+                !!e.getMatchingTags('g')[0]?.[1] ||
+                !!e.getMatchingTags('route')[0]?.[1]
+            ),
+        });
+    });
+
+    return Array.from(uniqueMap.values()).sort((a, b) => b.createdAt - a.createdAt);
+}
+
 
 export interface DMessage {
     id: string;
