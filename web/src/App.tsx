@@ -133,6 +133,7 @@ function App() {
 
   const [isMetric, setIsMetric] = useState(false);
   const [timeFilter, setTimeFilter] = useState<'all' | '7d' | '30d' | 'today'>('all');
+  const [globalTimeFilter, setGlobalTimeFilter] = useState<'all' | '7d' | '30d' | 'today'>('today');
 
   // Confidence-filtered global feed (>= 0.7, or no confidence tag = include)
   const filteredGlobalRides = useMemo(() => {
@@ -150,13 +151,26 @@ function App() {
 
   const heatmapCells = useMemo(() => showHeatmap ? buildHeatmap(filteredGlobalRides) : [], [filteredGlobalRides, showHeatmap]);
   const corridors = useMemo(() => buildCorridors(filteredGlobalRides), [filteredGlobalRides]);
+  const globalFilteredRides = useMemo(() => {
+    let filtered = rides;
+    if (globalTimeFilter !== 'all') {
+      const now = Math.floor(Date.now() / 1000);
+      let cutoff = 0;
+      if (globalTimeFilter === 'today') cutoff = now - 86400;
+      else if (globalTimeFilter === '7d') cutoff = now - 7 * 86400;
+      else if (globalTimeFilter === '30d') cutoff = now - 30 * 86400;
+      filtered = rides.filter(r => r.time >= cutoff);
+    }
+    return filtered;
+  }, [rides, globalTimeFilter]);
+
   const dataStats = useMemo(() => {
     const allPoints = filteredGlobalRides.flatMap(r => r.route);
     const uniqueRiders = new Set(filteredGlobalRides.map(r => r.hexPubkey || r.pubkey)).size;
     const totalDistance = filteredGlobalRides.reduce((acc, r) => acc + (isMetric && r.distanceKm !== undefined ? r.distanceKm : (r.distanceMiles !== undefined ? r.distanceMiles : parseFloat(r.distance || '0'))), 0);
     const dates = filteredGlobalRides.map(r => r.time).filter(Boolean).sort();
     return {
-      totalRides: rides.length,
+      totalRides: filteredGlobalRides.length,
       totalPoints: allPoints.length,
       uniqueRiders,
       totalDistance: totalDistance.toFixed(1),
@@ -558,16 +572,24 @@ function App() {
 
               {!selectedRide && (
                 <div className="widget glass-panel animate-fade-in" style={{ animationDelay: '0.1s', marginBottom: '16px' }}>
-                  <h2 className="widget-title"><Zap size={16} /> Global Stats (24h)</h2>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                    <h2 className="widget-title" style={{ margin: 0 }}><Zap size={16} /> Global Stats</h2>
+                    <select value={globalTimeFilter} onChange={e => setGlobalTimeFilter(e.target.value as any)} style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', color: '#fff', padding: '4px 8px', borderRadius: '4px', fontSize: '12px', outline: 'none', cursor: 'pointer' }}>
+                      <option value="today">24 Hours</option>
+                      <option value="7d">7 Days</option>
+                      <option value="30d">30 Days</option>
+                      <option value="all">All Time</option>
+                    </select>
+                  </div>
                   <div className="global-stats">
                     <div className="stat-box">
                       <div className="stat-value">
-                        {rides.reduce((acc, r) => acc + (isMetric && r.distanceKm !== undefined ? r.distanceKm : (r.distanceMiles !== undefined ? r.distanceMiles : parseFloat(r.distance || '0'))), 0).toFixed(1)}
+                        {globalFilteredRides.reduce((acc, r) => acc + (isMetric && r.distanceKm !== undefined ? r.distanceKm : (r.distanceMiles !== undefined ? r.distanceMiles : parseFloat(r.distance || '0'))), 0).toFixed(1)}
                       </div>
                       <div className="stat-label">{isMetric ? 'KM Ridden' : 'Miles Ridden'}</div>
                     </div>
                     <div className="stat-box">
-                      <div className="stat-value">{new Set(rides.map(r => r.pubkey)).size}</div>
+                      <div className="stat-value">{new Set(globalFilteredRides.map(r => r.pubkey)).size}</div>
                       <div className="stat-label">Active Riders</div>
                     </div>
                   </div>
