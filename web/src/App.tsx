@@ -71,6 +71,28 @@ function downloadCSV(filename: string, rows: string[][], headers: string[]) {
   URL.revokeObjectURL(url);
 }
 
+function formatDistance(ride: RideEvent, isMetric: boolean) {
+  if (ride.distanceKm !== undefined && ride.distanceMiles !== undefined) {
+    return isMetric ? `${ride.distanceKm.toFixed(1)} km` : `${ride.distanceMiles.toFixed(1)} mi`;
+  }
+  return isMetric ? `${(parseFloat(ride.distance || '0') / 0.621371).toFixed(1)} km` : `${ride.distance} mi`;
+}
+
+function formatSpeed(ride: RideEvent, isMetric: boolean) {
+  if (!ride.rawDuration || ride.rawDuration === 0) return '0.0';
+  let distMi = parseFloat(ride.distance || '0');
+  if (ride.distanceMiles !== undefined) distMi = ride.distanceMiles;
+  const speed = distMi / (ride.rawDuration / 3600);
+  return isMetric ? `${(speed / 0.621371).toFixed(1)} km/h` : `${speed.toFixed(1)} mph`;
+}
+
+function formatElevation(elevationStr: string | undefined, isMetric: boolean) {
+  if (!elevationStr) return null;
+  const val = parseFloat(elevationStr);
+  if (isNaN(val)) return elevationStr;
+  return isMetric ? `${Math.round(val * 0.3048)} m` : `${Math.round(val)} ft`;
+}
+
 // ── Main App ───────────────────────────────────────────
 function App() {
   const [isConnected, setIsConnected] = useState(false);
@@ -109,26 +131,40 @@ function App() {
   const [showHeatmap, setShowHeatmap] = useState(false);
   const [deletingRideId, setDeletingRideId] = useState<string | null>(null);
 
+  const [isMetric, setIsMetric] = useState(false);
+  const [timeFilter, setTimeFilter] = useState<'all' | '7d' | '30d' | 'today'>('all');
+
   // Confidence-filtered global feed (>= 0.7, or no confidence tag = include)
-  const filteredGlobalRides = useMemo(() => rides.filter(r => r.confidence === undefined || r.confidence >= 0.7), [rides]);
+  const filteredGlobalRides = useMemo(() => {
+    let filtered = rides.filter(r => r.confidence === undefined || r.confidence >= 0.7);
+    if (timeFilter !== 'all') {
+      const now = Math.floor(Date.now() / 1000);
+      let cutoff = 0;
+      if (timeFilter === 'today') cutoff = now - 86400;
+      else if (timeFilter === '7d') cutoff = now - 7 * 86400;
+      else if (timeFilter === '30d') cutoff = now - 30 * 86400;
+      filtered = filtered.filter(r => r.time >= cutoff);
+    }
+    return filtered;
+  }, [rides, timeFilter]);
 
   const heatmapCells = useMemo(() => showHeatmap ? buildHeatmap(filteredGlobalRides) : [], [filteredGlobalRides, showHeatmap]);
   const corridors = useMemo(() => buildCorridors(filteredGlobalRides), [filteredGlobalRides]);
   const dataStats = useMemo(() => {
     const allPoints = filteredGlobalRides.flatMap(r => r.route);
     const uniqueRiders = new Set(filteredGlobalRides.map(r => r.hexPubkey || r.pubkey)).size;
-    const totalMiles = filteredGlobalRides.reduce((acc, r) => acc + parseFloat(r.distance || '0'), 0);
+    const totalDistance = filteredGlobalRides.reduce((acc, r) => acc + (isMetric && r.distanceKm !== undefined ? r.distanceKm : (r.distanceMiles !== undefined ? r.distanceMiles : parseFloat(r.distance || '0'))), 0);
     const dates = filteredGlobalRides.map(r => r.time).filter(Boolean).sort();
     return {
       totalRides: rides.length,
       totalPoints: allPoints.length,
       uniqueRiders,
-      totalMiles: totalMiles.toFixed(1),
+      totalDistance: totalDistance.toFixed(1),
       dateRange: dates.length > 0
         ? `${format(new Date(dates[0] * 1000), 'MMM d, yyyy')} – ${format(new Date(dates[dates.length - 1] * 1000), 'MMM d, yyyy')}`
         : 'N/A',
     };
-  }, [rides]);
+  }, [rides, filteredGlobalRides, isMetric]);
 
   useEffect(() => {
     if (!selectedRide && lastSelectedRideId) {
@@ -355,6 +391,7 @@ function App() {
           <button className="btn btn-surface" style={{ padding: '8px', color: isNWCConnected ? '#eab308' : '#555' }} onClick={() => setShowNWCModal(true)} title="Connect Lightning Wallet"><Zap size={20} /></button>
           <button className="btn btn-surface" style={{ padding: '8px', color: '#555' }} onClick={() => setShowAbout(true)} title="About Bikel"><Info size={20} /></button>
           <button className="btn btn-surface" style={{ padding: '8px', color: '#555' }} onClick={() => setShowHowTo(true)} title="How to Use Bikel"><HelpCircle size={20} /></button>
+          <button className="btn btn-surface" style={{ padding: '8px', color: '#555', fontWeight: 'bold', fontSize: '12px' }} onClick={() => setIsMetric(!isMetric)} title="Toggle Units (Metric/Imperial)">{isMetric ? 'KM' : 'MI'}</button>
           <button className="btn btn-primary" style={{ display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 'bold' }} onClick={() => setShowAppPromo(true)}><Smartphone size={16} /> Get App</button>
           {user ? (
             <div className="user-profile" style={{ display: 'flex', alignItems: 'center', gap: '8px', color: viewMode === 'personal' ? '#00ffaa' : '#fff', cursor: 'pointer', padding: '6px 12px', background: 'rgba(255,255,255,0.05)', borderRadius: '20px' }} onClick={toggleViewMode}>
@@ -374,13 +411,21 @@ function App() {
           </div>
 
           {/* ── DATA PANEL ── */}
-          {viewMode === 'data' ? (
+          {viewMode === 'data' && !selectedRide ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', height: '100%', overflowY: 'auto' }}>
 
               <div className="widget glass-panel animate-fade-in" style={{ borderColor: 'rgba(0,204,255,0.3)', background: 'rgba(0,20,40,0.8)' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px' }}>
-                  <Database size={18} color="#00ccff" />
-                  <h2 style={{ margin: 0, color: '#00ccff', fontSize: '14px', letterSpacing: '1px', textTransform: 'uppercase' }}>Open Cycling Data</h2>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px', justifyContent: 'space-between' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <Database size={18} color="#00ccff" />
+                    <h2 style={{ margin: 0, color: '#00ccff', fontSize: '14px', letterSpacing: '1px', textTransform: 'uppercase' }}>Open Cycling Data</h2>
+                  </div>
+                  <select value={timeFilter} onChange={e => setTimeFilter(e.target.value as any)} style={{ background: 'rgba(0,204,255,0.1)', border: '1px solid rgba(0,204,255,0.3)', color: '#00ccff', padding: '4px 8px', borderRadius: '4px', fontSize: '12px', outline: 'none', cursor: 'pointer' }}>
+                    <option value="all">All Time</option>
+                    <option value="today">Today</option>
+                    <option value="7d">Last 7 Days</option>
+                    <option value="30d">Last 30 Days</option>
+                  </select>
                 </div>
                 <p style={{ color: '#9ba1a6', fontSize: '12px', lineHeight: 1.6, margin: 0 }}>
                   Anonymous GPS data from cyclists publishing to the Nostr network. All rides are opt-in and publicly broadcast. Rider IDs are truncated pubkey prefixes — no personal data is stored or sold.
@@ -395,7 +440,7 @@ function App() {
                   {[
                     { label: 'Total Rides', value: dataStats.totalRides },
                     { label: 'Unique Riders', value: dataStats.uniqueRiders },
-                    { label: 'Total Miles', value: `${dataStats.totalMiles} mi` },
+                    { label: isMetric ? 'Total Distance' : 'Total Miles', value: `${dataStats.totalDistance} ${isMetric ? 'km' : 'mi'}` },
                     { label: 'GPS Points', value: dataStats.totalPoints.toLocaleString() },
                   ].map(({ label, value }) => (
                     <div key={label} style={{ background: 'rgba(0,0,0,0.4)', borderRadius: '8px', padding: '12px', border: '1px solid rgba(255,255,255,0.05)' }}>
@@ -483,19 +528,51 @@ function App() {
           ) : (
             /* ── NORMAL SIDEBAR ── */
             <>
-              <div className="widget glass-panel animate-fade-in" style={{ animationDelay: '0.1s' }}>
-                <h2 className="widget-title"><Zap size={16} /> Global Stats (24h)</h2>
-                <div className="global-stats">
-                  <div className="stat-box">
-                    <div className="stat-value">{rides.reduce((acc, r) => acc + parseFloat(r.distance || '0'), 0).toFixed(1)}</div>
-                    <div className="stat-label">Miles Ridden</div>
-                  </div>
-                  <div className="stat-box">
-                    <div className="stat-value">{new Set(rides.map(r => r.pubkey)).size}</div>
-                    <div className="stat-label">Active Riders</div>
+              {!selectedRide && viewMode === 'personal' && (
+                <div className="widget glass-panel animate-fade-in" style={{ animationDelay: '0.05s', marginBottom: '16px', borderColor: 'rgba(0, 255, 170, 0.3)' }}>
+                  <h2 className="widget-title" style={{ color: '#00ffaa' }}><Activity size={16} /> My Riding Stats</h2>
+                  <div className="global-stats" style={{ gridTemplateColumns: 'repeat(3, 1fr)' }}>
+                    <div className="stat-box" style={{ background: 'rgba(0, 255, 170, 0.05)' }}>
+                      <div className="stat-value" style={{ color: '#fff' }}>{myRides.length}</div>
+                      <div className="stat-label" style={{ color: '#00ffaa' }}>Rides</div>
+                    </div>
+                    <div className="stat-box" style={{ background: 'rgba(0, 255, 170, 0.05)' }}>
+                      <div className="stat-value" style={{ color: '#fff' }}>
+                        {myRides.reduce((acc, r) => acc + (isMetric && r.distanceKm !== undefined ? r.distanceKm : (r.distanceMiles !== undefined ? r.distanceMiles : parseFloat(r.distance || '0'))), 0).toFixed(1)}
+                      </div>
+                      <div className="stat-label" style={{ color: '#00ffaa' }}>{isMetric ? 'Total KM' : 'Total Miles'}</div>
+                    </div>
+                    <div className="stat-box" style={{ background: 'rgba(0, 255, 170, 0.05)' }}>
+                      <div className="stat-value" style={{ color: '#fff' }}>
+                        {(() => {
+                          const dist = myRides.reduce((acc, r) => acc + (isMetric && r.distanceKm !== undefined ? r.distanceKm : (r.distanceMiles !== undefined ? r.distanceMiles : parseFloat(r.distance || '0'))), 0);
+                          const secs = myRides.reduce((acc, r) => acc + (r.rawDuration || 0), 0);
+                          return secs > 0 ? (dist / (secs / 3600)).toFixed(1) : '0.0';
+                        })()}
+                      </div>
+                      <div className="stat-label" style={{ color: '#00ffaa' }}>Avg {isMetric ? 'km/h' : 'mph'}</div>
+                    </div>
                   </div>
                 </div>
-              </div>
+              )}
+
+              {!selectedRide && (
+                <div className="widget glass-panel animate-fade-in" style={{ animationDelay: '0.1s', marginBottom: '16px' }}>
+                  <h2 className="widget-title"><Zap size={16} /> Global Stats (24h)</h2>
+                  <div className="global-stats">
+                    <div className="stat-box">
+                      <div className="stat-value">
+                        {rides.reduce((acc, r) => acc + (isMetric && r.distanceKm !== undefined ? r.distanceKm : (r.distanceMiles !== undefined ? r.distanceMiles : parseFloat(r.distance || '0'))), 0).toFixed(1)}
+                      </div>
+                      <div className="stat-label">{isMetric ? 'KM Ridden' : 'Miles Ridden'}</div>
+                    </div>
+                    <div className="stat-box">
+                      <div className="stat-value">{new Set(rides.map(r => r.pubkey)).size}</div>
+                      <div className="stat-label">Active Riders</div>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               <div className="widget glass-panel animate-fade-in" style={{ flex: 1, animationDelay: '0.2s' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
@@ -544,12 +621,12 @@ function App() {
                         {selectedRide.description && <div style={{ fontSize: '14px', color: '#eee', marginBottom: '16px', lineHeight: 1.5 }}>{selectedRide.description}</div>}
 
                         <div className="ride-stats" style={{ background: 'rgba(0,0,0,0.3)', marginBottom: '16px' }}>
-                          <div className="stat-item"><Route size={16} className="icon" style={{ color: '#00ffaa' }} /> {selectedRide.distance} mi</div>
+                          <div className="stat-item"><Route size={16} className="icon" style={{ color: '#00ffaa' }} /> {formatDistance(selectedRide, isMetric)}</div>
                           <div className="stat-item"><Clock size={16} className="icon" style={{ color: '#00ffaa' }} /> {selectedRide.duration}</div>
-                          {selectedRide.rawDuration > 0 && parseFloat(selectedRide.distance) > 0 && (
-                            <div className="stat-item"><Gauge size={16} className="icon" style={{ color: '#00ccff' }} /> {(parseFloat(selectedRide.distance) / (selectedRide.rawDuration / 3600)).toFixed(1)} mph</div>
+                          {selectedRide.rawDuration > 0 && parseFloat(selectedRide.distance || '0') > 0 && (
+                            <div className="stat-item"><Gauge size={16} className="icon" style={{ color: '#00ccff' }} /> {formatSpeed(selectedRide, isMetric)}</div>
                           )}
-                          {selectedRide.elevation && <div className="stat-item"><ChevronUp size={16} className="icon" style={{ color: '#00ffaa' }} /> {selectedRide.elevation} ft</div>}
+                          {selectedRide.elevation && <div className="stat-item"><ChevronUp size={16} className="icon" style={{ color: '#00ffaa' }} /> {formatElevation(selectedRide.elevation, isMetric)}</div>}
                         </div>
 
                         <div className="modal-comments" style={{ padding: '0', borderTop: 'none', background: 'transparent' }}>
@@ -624,10 +701,10 @@ function App() {
                                 <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.3)', marginTop: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                   <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                                     <span>Org: <span style={{ cursor: 'pointer', textDecoration: 'underline' }} onClick={(e) => { e.stopPropagation(); loadAuthorProfile(event.pubkey); }}>{profiles[event.hexPubkey || event.pubkey]?.nip05 || profiles[event.hexPubkey || event.pubkey]?.name || `${event.pubkey.substring(0, 10)}...`}</span></span>
-                                    {event.route && event.route.length > 0 && <button className="btn btn-surface" style={{ padding: '2px 8px', fontSize: '11px', background: 'rgba(0,255,170,0.1)', color: '#00ffaa' }} onClick={(e) => { e.stopPropagation(); setSelectedRide({ id: event.id, pubkey: event.pubkey, hexPubkey: event.hexPubkey, time: event.startTime, distance: event.distance || 'GPS Route', duration: event.duration || 'Scheduled', rawDuration: 0, visibility: 'full', route: event.route!, kind: 33301, image: event.image }); }}>🗺️ Map</button>}
+                                    {event.route && event.route.length > 0 && <button className="btn btn-surface" style={{ padding: '2px 8px', fontSize: '11px', background: 'rgba(0,255,170,0.1)', color: '#00ffaa' }} onClick={(e) => { e.stopPropagation(); setSelectedRide({ id: event.id, pubkey: event.pubkey, hexPubkey: event.hexPubkey, time: event.startTime, distance: event.distance || '0', distanceKm: 0, distanceMiles: 0, duration: event.duration || '0', rawDuration: 0, visibility: 'full', route: event.route!, kind: 33301, image: event.image }); }}>🗺️ Map</button>}
                                   </div>
                                   <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-                                    {isNWCConnected && <button onClick={async (e) => { e.stopPropagation(); if (zappingEventId) return; if (!window.confirm(`Zap organizer 21 sats?`)) return; setZappingEventId(event.id); try { await zapRideEvent(event.id, event.hexPubkey, event.kind, 21, "Thanks for organizing this ride!"); alert("Successfully sent 21 sats!"); } catch (e: any) { alert("Zap failed: " + (e.message || "Unknown error")); } setZappingEventId(null); }} style={{ background: 'none', border: 'none', color: '#eab308', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px', fontSize: '12px' }}><Zap size={14} fill={zappingEventId === event.id ? "#eab308" : "none"} /> 21</button>}
+                                    {isNWCConnected && <button onClick={async (e) => { e.stopPropagation(); if (zappingEventId) return; const amtStr = window.prompt("Enter amount to Zap in sats:", "21"); if (!amtStr) return; const amt = parseInt(amtStr, 10); if (isNaN(amt) || amt <= 0) return; setZappingEventId(event.id); try { await zapRideEvent(event.id, event.hexPubkey, event.kind, amt, "Thanks for organizing this ride!"); alert(`Successfully sent ${amt} sats!`); } catch (e: any) { alert("Zap failed: " + (e.message || "Unknown error")); } setZappingEventId(null); }} style={{ background: 'none', border: 'none', color: '#eab308', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px', fontSize: '12px' }}><Zap size={14} fill={zappingEventId === event.id ? "#eab308" : "none"} /> Zap</button>}
                                     <button className="btn btn-primary" style={{ padding: '6px 12px', fontSize: '13px', background: '#00ccff', color: '#000', fontWeight: 'bold' }} onClick={() => setActiveDMUser(event.pubkey)}>Message Organizer</button>
                                   </div>
                                 </div>
@@ -653,7 +730,7 @@ function App() {
                                 <div className="ride-stats" style={{ borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                                     <div className="stat-item" style={{ color: '#888' }}><Users size={14} className="icon" /> {event.attendees.length} Past Riders</div>
-                                    {event.route && event.route.length > 0 && <button className="stat-item" style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', cursor: 'pointer' }} onClick={(e) => { e.stopPropagation(); setSelectedRide({ id: event.dTag, pubkey: event.hexPubkey, hexPubkey: event.hexPubkey, time: event.startTime, distance: "0", duration: "0", rawDuration: 0, visibility: "full", route: event.route!, kind: 33301 }); }}>🗺️ Map</button>}
+                                    {event.route && event.route.length > 0 && <button className="stat-item" style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', cursor: 'pointer' }} onClick={(e) => { e.stopPropagation(); setSelectedRide({ id: event.dTag, pubkey: event.hexPubkey, hexPubkey: event.hexPubkey, time: event.startTime, distance: "0", distanceKm: 0, distanceMiles: 0, duration: "0", rawDuration: 0, visibility: "full", route: event.route!, kind: 33301 }); }}>🗺️ Map</button>}
                                   </div>
                                 </div>
                               </div>
@@ -686,12 +763,12 @@ function App() {
                           {ride.description && <div style={{ fontSize: '13px', color: '#ddd', marginBottom: '12px', lineHeight: 1.4 }}>{ride.description}</div>}
                           <div className="ride-stats-container">
                             <div className="ride-stats">
-                              <div className="stat-item"><Route size={16} className="icon" style={{ color: '#00ffaa' }} /> {ride.distance} mi</div>
+                              <div className="stat-item"><Route size={16} className="icon" style={{ color: '#00ffaa' }} /> {formatDistance(ride, isMetric)}</div>
                               <div className="stat-item"><Clock size={16} className="icon" style={{ color: '#00ffaa' }} /> {ride.duration}</div>
-                              {ride.rawDuration > 0 && parseFloat(ride.distance) > 0 && (
-                                <div className="stat-item"><Gauge size={16} className="icon" style={{ color: '#00ccff' }} /> {(parseFloat(ride.distance) / (ride.rawDuration / 3600)).toFixed(1)} mph</div>
+                              {ride.rawDuration > 0 && parseFloat(ride.distance || '0') > 0 && (
+                                <div className="stat-item"><Gauge size={16} className="icon" style={{ color: '#00ccff' }} /> {formatSpeed(ride, isMetric)}</div>
                               )}
-                              {ride.elevation && <div className="stat-item"><ChevronUp size={16} className="icon" style={{ color: '#00ffaa' }} /> {ride.elevation} ft</div>}
+                              {ride.elevation && <div className="stat-item"><ChevronUp size={16} className="icon" style={{ color: '#00ffaa' }} /> {formatElevation(ride.elevation, isMetric)}</div>}
                             </div>
                             <div className="stat-meta">
                               {ride.confidence !== undefined && (
@@ -702,8 +779,8 @@ function App() {
                               <div className="stat-meta-item" style={{ marginLeft: 'auto', display: 'flex', gap: '8px', alignItems: 'center' }}>
                                 <span style={{ opacity: 0.6 }}>{ride.client || 'Bikel'}</span>
                                 {isNWCConnected && viewMode !== 'personal' && (
-                                  <button onClick={async (e) => { e.stopPropagation(); if (zappingEventId) return; if (!window.confirm(`Zap rider 21 sats?`)) return; setZappingEventId(ride.id); try { await zapRideEvent(ride.id, ride.hexPubkey, ride.kind, 21, "Great ride!"); alert("Successfully sent 21 sats!"); } catch (e: any) { alert("Zap failed: " + (e.message || "Unknown error")); } setZappingEventId(null); }} className="btn btn-surface" style={{ padding: '2px 8px', color: '#eab308', borderRadius: '12px', fontSize: '11px', border: '1px solid rgba(234,179,8,0.3)' }}>
-                                    <Zap size={11} fill={zappingEventId === ride.id ? "#eab308" : "none"} /> 21
+                                  <button onClick={async (e) => { e.stopPropagation(); if (zappingEventId) return; const amtStr = window.prompt("Enter amount to Zap in sats:", "21"); if (!amtStr) return; const amt = parseInt(amtStr, 10); if (isNaN(amt) || amt <= 0) return; setZappingEventId(ride.id); try { await zapRideEvent(ride.id, ride.hexPubkey, ride.kind, amt, "Great ride!"); alert(`Successfully sent ${amt} sats!`); } catch (e: any) { alert("Zap failed: " + (e.message || "Unknown error")); } setZappingEventId(null); }} className="btn btn-surface" style={{ padding: '2px 8px', color: '#eab308', borderRadius: '12px', fontSize: '11px', border: '1px solid rgba(234,179,8,0.3)' }}>
+                                    <Zap size={11} fill={zappingEventId === ride.id ? "#eab308" : "none"} /> Zap
                                   </button>
                                 )}
                                 {viewMode === 'personal' && user && ride.hexPubkey === user.pubkey && (
@@ -739,7 +816,7 @@ function App() {
               return (
                 <LayerGroup key={ride.id}>
                   <CircleMarker center={startCoords} radius={5} pathOptions={{ color: rideColor, fillColor: rideColor, fillOpacity: rideOpacity + 0.1, weight: 2 }} eventHandlers={{ click: () => setSelectedRide(ride) }}>
-                    <Popup><div style={{ color: '#000', fontSize: '13px' }}><strong>{ride.pubkey.substring(0, 12)}...</strong><br />{ride.distance} mi in {ride.duration}</div></Popup>
+                    <Popup><div style={{ color: '#000', fontSize: '13px' }}><strong>{ride.pubkey.substring(0, 12)}...</strong><br />{formatDistance(ride, isMetric)} in {ride.duration}</div></Popup>
                   </CircleMarker>
                   <Polyline positions={ride.route as [number, number][]} pathOptions={{ color: rideColor, weight: 3, opacity: rideOpacity }} eventHandlers={{ click: () => setSelectedRide(ride) }} />
                 </LayerGroup>

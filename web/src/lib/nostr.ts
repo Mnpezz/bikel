@@ -151,6 +151,8 @@ export interface RideEvent {
     hexPubkey: string;
     time: number;
     distance: string;
+    distanceMiles: number;
+    distanceKm: number;
     duration: string;
     rawDuration: number;
     visibility: string;
@@ -176,6 +178,7 @@ function parseRideEvent(event: NDKEvent): RideEvent | null {
 
         // Convert KM to Miles if necessary
         const distanceMiles = distanceUnit === 'km' ? distanceVal * 0.621371 : distanceVal;
+        const distanceKm = distanceUnit === 'mi' ? distanceVal / 0.621371 : distanceVal;
         const distance = distanceMiles.toFixed(2);
 
         const durationRaw = event.getMatchingTags("duration")[0]?.[1] || "0";
@@ -261,6 +264,8 @@ function parseRideEvent(event: NDKEvent): RideEvent | null {
             hexPubkey: event.pubkey,
             time: event.created_at || Math.floor(Date.now() / 1000),
             distance,
+            distanceMiles,
+            distanceKm,
             duration: durationRaw.includes(':') 
                 ? (durationRaw.split(':').length === 2 ? `00:${durationRaw}` : durationRaw)
                 : `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`,
@@ -285,8 +290,8 @@ export async function fetchRecentRides(): Promise<RideEvent[]> {
     const ndk = await connectNDK();
 
     const filters: NDKFilter[] = [
-        { kinds: [33301 as any, 1301 as any], limit: 100 },
-        { kinds: [1 as any], "#t": ["RUNSTR", "cycling", "fitness", "bikel"], limit: 50 }
+        { kinds: [33301 as any, 1301 as any], limit: 500 },
+        { kinds: [1 as any], "#t": ["RUNSTR", "cycling", "fitness", "bikel"], limit: 200 }
     ];
 
     console.log("[Nostr] Fetching recent Bikel & Runstr rides...");
@@ -330,8 +335,8 @@ export async function fetchUserRides(pubkeyOrNpub: string): Promise<RideEvent[]>
     }
 
     const filters: NDKFilter[] = [
-        { kinds: [33301 as any, 1301 as any], authors: [hexPubkey], limit: 50 },
-        { kinds: [1 as any], authors: [hexPubkey], "#t": ["RUNSTR", "cycling", "fitness", "bikel"], limit: 50 }
+        { kinds: [33301 as any, 1301 as any], authors: [hexPubkey], limit: 200 },
+        { kinds: [1 as any], authors: [hexPubkey], "#t": ["RUNSTR", "cycling", "fitness", "bikel"], limit: 100 }
     ];
 
     console.log(`[Nostr] Fetching rides for user ${pubkeyOrNpub}...`);
@@ -376,7 +381,7 @@ export async function fetchScheduledRides(): Promise<ScheduledRideEvent[]> {
     const ndk = await connectNDK();
 
     const filters: NDKFilter[] = [
-        { kinds: [31923 as any], limit: 100 }
+        { kinds: [31923 as any], limit: 400 }
     ];
 
     console.log("[Nostr] Fetching scheduled Bikel & Cycling rides (Kind 31923)...");
