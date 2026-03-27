@@ -145,13 +145,13 @@ function App() {
   const filteredGlobalRides = useMemo(() => {
     let filtered = rides.filter(r => r.confidence === undefined || r.confidence >= 0.7);
     if (timeFilter === 'miner') return filtered;
-    
+
     const now = Math.floor(Date.now() / 1000);
     let cutoff = 0;
     if (timeFilter === 'today') cutoff = now - 86400;
     else if (timeFilter === '7d') cutoff = now - 7 * 86400;
     else if (timeFilter === '30d') cutoff = now - 30 * 86400;
-    
+
     if (cutoff > 0) {
       filtered = filtered.filter(r => r.time >= cutoff);
     }
@@ -239,7 +239,7 @@ function App() {
               .sort((a, b) => b.time - a.time);
           });
           // Start loading profiles for the first batch immediately
-          loadAuthorProfiles(incrementalRides.slice(0, 20).map(r => r.hexPubkey || r.pubkey)).catch(() => {});
+          loadAuthorProfiles(incrementalRides.slice(0, 20).map(r => r.hexPubkey || r.pubkey)).catch(() => { });
         }
       }, undefined, since).then(finalRides => {
         if (finalRides.length > 0) {
@@ -249,7 +249,7 @@ function App() {
               .filter((v, i, a) => a.findIndex(r => r.id === v.id) === i)
               .sort((a, b) => b.time - a.time);
           });
-          loadAuthorProfiles(finalRides.map(r => r.hexPubkey || r.pubkey)).catch(() => {});
+          loadAuthorProfiles(finalRides.map(r => r.hexPubkey || r.pubkey)).catch(() => { });
         }
       }).catch(console.error);
 
@@ -259,7 +259,7 @@ function App() {
           const merged = [...prev, ...fetchedScheduled];
           return merged.filter((v, i, a) => a.findIndex(r => r.id === v.id) === i).sort((a, b) => a.startTime - b.startTime);
         });
-        loadAuthorProfiles(fetchedScheduled.map(r => r.hexPubkey || r.pubkey)).catch(() => {});
+        loadAuthorProfiles(fetchedScheduled.map(r => r.hexPubkey || r.pubkey)).catch(() => { });
       }).catch(console.error);
 
       if (user) {
@@ -268,7 +268,7 @@ function App() {
             const merged = [...prev, ...personalRides];
             return merged.filter((v, i, a) => a.findIndex(r => r.id === v.id) === i).sort((a, b) => b.time - a.time);
           });
-          loadAuthorProfiles(personalRides.map(r => r.hexPubkey || r.pubkey)).catch(() => {});
+          loadAuthorProfiles(personalRides.map(r => r.hexPubkey || r.pubkey)).catch(() => { });
         }).catch(console.error);
       }
 
@@ -278,7 +278,7 @@ function App() {
             const merged = [...prev, ...authoredRides];
             return merged.filter((v, i, a) => a.findIndex(r => r.id === v.id) === i).sort((a, b) => b.time - a.time);
           });
-          loadAuthorProfiles(authoredRides.map(r => r.hexPubkey || r.pubkey)).catch(() => {});
+          loadAuthorProfiles(authoredRides.map(r => r.hexPubkey || r.pubkey)).catch(() => { });
         }).catch(console.error);
       }
     } catch (e) {
@@ -347,14 +347,14 @@ function App() {
       console.log("[Bikel] Mounting app...");
       await connectNDK();
       if (mounted) setIsConnected(true);
-      
+
       const savedNwc = localStorage.getItem('bikel_nwc_uri');
       if (savedNwc) {
         setNwcURI(savedNwc);
         const success = await connectNWC(savedNwc);
         if (mounted && success) setIsNWCConnected(true);
       }
-      
+
       await loadFeeds();
     })();
     return () => { mounted = false; };
@@ -1193,7 +1193,7 @@ function App() {
             </div>
           </div>
           <p style={{ textAlign: 'center', fontSize: '16px', marginBottom: '32px' }}>Download the official Android APK to passively record maps, upload photos, and broadcast rides securely to any Nostr relay!</p>
-          <a href="https://github.com/Mnpezz/bikel/releases/download/v1.3.2/app-release.apk" download className="btn btn-primary" style={{ width: '100%', padding: '16px', fontSize: '18px', justifyContent: 'center', background: '#00ffaa', color: '#000', fontWeight: '900', textTransform: 'uppercase', letterSpacing: '1px', boxShadow: '0 0 20px rgba(0,255,170,0.4)' }}>Download Android APK</a>
+          <a href="https://github.com/Mnpezz/bikel/releases/download/v1.3.5/app-release.apk" download className="btn btn-primary" style={{ width: '100%', padding: '16px', fontSize: '18px', justifyContent: 'center', background: '#00ffaa', color: '#000', fontWeight: '900', textTransform: 'uppercase', letterSpacing: '1px', boxShadow: '0 0 20px rgba(0,255,170,0.4)' }}>Download Android APK</a>
           <div style={{ marginTop: '24px', fontSize: '12px', color: 'rgba(255,255,255,0.4)', textAlign: 'center' }}>Requires Android 10.0 or higher.</div>
         </div>
       </div>

@@ -6,7 +6,6 @@ export const DEFAULT_RELAYS = [
     "wss://relay.bikel.ink",
     "wss://relay.damus.io",
     "wss://relay.primal.net",
-    "wss://nos.lol",
 ];
 
 export const ESCROW_PUBKEY = "cc130b7120d00ded76d065bf0bd27e3a36a38d5268208078a1e99aa29ac44adf";
@@ -21,7 +20,12 @@ export async function connectNDK(): Promise<NDK> {
     });
 
     console.log("[Nostr] Connecting to relays...");
-    await globalNdk.connect().catch((e) => console.error("[Nostr] Connection error:", e));
+    // Race connection against a 3s timeout to ensure flaky relays don't hang the app
+    await Promise.race([
+        globalNdk.connect().catch((e) => console.error("[Nostr] Connection error:", e)),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), 3000))
+    ]).catch(e => console.warn("[Nostr] NDK connect completed with errors or timeout:", e.message));
+    
     console.log("[Nostr] Connected.");
 
     return globalNdk;

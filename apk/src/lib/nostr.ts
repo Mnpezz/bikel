@@ -60,7 +60,6 @@ export const DEFAULT_RELAYS = [
     'wss://relay.bikel.ink',
     'wss://relay.damus.io',
     'wss://relay.primal.net',
-    'wss://nos.lol',
 ];
 
 // Relays that support NIP-50 full-text search (search field in REQ filters).
