@@ -2,7 +2,7 @@ import { useEffect, useState, useMemo } from 'react';
 import { MapContainer, TileLayer, CircleMarker, Popup, Polyline, useMap, LayerGroup } from 'react-leaflet';
 import { Bike, Activity, CalendarPlus, Zap, LogIn, Info, HelpCircle, Smartphone, X, Clock, Route, CheckCircle, RefreshCw, Map as MapIcon, ChevronUp, ChevronDown, Users, Database, Download, BarChart2, Trash2, Gauge, ArrowLeft } from 'lucide-react';
 import { formatDistanceToNow, format } from 'date-fns';
-import { connectNDK, fetchRecentRides, fetchUserRides, fetchScheduledRides, loginNip07, publishRSVP, connectNWC, zapRideEvent, fetchComments, publishComment, fetchDMs, sendDM, deleteRide } from './lib/nostr';
+import { connectNDK, fetchRecentRides, fetchUserRides, fetchScheduledRides, loginNip07, publishRSVP, connectNWC, zapRideEvent, fetchComments, publishComment, fetchDMs, sendDM, deleteRide, fetchAllRidesInRange } from './lib/nostr';
 import type { RideEvent, ScheduledRideEvent, RideComment, DMessage } from './lib/nostr';
 import type { NDKUser } from '@nostr-dev-kit/ndk';
 import './App.css';
@@ -131,19 +131,28 @@ function App() {
   const [showHeatmap, setShowHeatmap] = useState(false);
   const [deletingRideId, setDeletingRideId] = useState<string | null>(null);
 
+  const [minerSinceDate, setMinerSinceDate] = useState('');
+  const [minerUntilDate, setMinerUntilDate] = useState('');
+  const [isMining, setIsMining] = useState(false);
+  const [minedCount, setMinedCount] = useState(0);
+
   const [isMetric, setIsMetric] = useState(false);
-  const [timeFilter, setTimeFilter] = useState<'all' | '7d' | '30d' | 'today'>('all');
-  const [globalTimeFilter, setGlobalTimeFilter] = useState<'all' | '7d' | '30d' | 'today'>('today');
+  const [timeFilter, setTimeFilter] = useState<'miner' | '7d' | '30d' | 'today'>('30d');
+  const [isSyncingFilter, setIsSyncingFilter] = useState(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
 
   // Confidence-filtered global feed (>= 0.7, or no confidence tag = include)
   const filteredGlobalRides = useMemo(() => {
     let filtered = rides.filter(r => r.confidence === undefined || r.confidence >= 0.7);
-    if (timeFilter !== 'all') {
-      const now = Math.floor(Date.now() / 1000);
-      let cutoff = 0;
-      if (timeFilter === 'today') cutoff = now - 86400;
-      else if (timeFilter === '7d') cutoff = now - 7 * 86400;
-      else if (timeFilter === '30d') cutoff = now - 30 * 86400;
+    if (timeFilter === 'miner') return filtered;
+    
+    const now = Math.floor(Date.now() / 1000);
+    let cutoff = 0;
+    if (timeFilter === 'today') cutoff = now - 86400;
+    else if (timeFilter === '7d') cutoff = now - 7 * 86400;
+    else if (timeFilter === '30d') cutoff = now - 30 * 86400;
+    
+    if (cutoff > 0) {
       filtered = filtered.filter(r => r.time >= cutoff);
     }
     return filtered;
@@ -151,18 +160,7 @@ function App() {
 
   const heatmapCells = useMemo(() => showHeatmap ? buildHeatmap(filteredGlobalRides) : [], [filteredGlobalRides, showHeatmap]);
   const corridors = useMemo(() => buildCorridors(filteredGlobalRides), [filteredGlobalRides]);
-  const globalFilteredRides = useMemo(() => {
-    let filtered = rides;
-    if (globalTimeFilter !== 'all') {
-      const now = Math.floor(Date.now() / 1000);
-      let cutoff = 0;
-      if (globalTimeFilter === 'today') cutoff = now - 86400;
-      else if (globalTimeFilter === '7d') cutoff = now - 7 * 86400;
-      else if (globalTimeFilter === '30d') cutoff = now - 30 * 86400;
-      filtered = rides.filter(r => r.time >= cutoff);
-    }
-    return filtered;
-  }, [rides, globalTimeFilter]);
+  const globalFilteredRides = filteredGlobalRides;
 
   const dataStats = useMemo(() => {
     const allPoints = filteredGlobalRides.flatMap(r => r.route);
@@ -182,7 +180,6 @@ function App() {
 
   useEffect(() => {
     if (!selectedRide && lastSelectedRideId) {
-      // Small delay to ensure the list is rendered first
       setTimeout(() => {
         const element = document.getElementById(`ride-${lastSelectedRideId}`);
         if (element) {
@@ -198,6 +195,13 @@ function App() {
       fetchDMs(activeDMUser).then(setDmMessages);
     }
   }, [activeDMUser]);
+
+  useEffect(() => {
+    console.log(`[Bikel] Timeframe updated to: ${timeFilter}`);
+    setIsSyncingFilter(true);
+    const timer = setTimeout(() => setIsSyncingFilter(false), 800);
+    return () => clearTimeout(timer);
+  }, [timeFilter]);
 
   const loadAuthorProfiles = async (pubkeys: string[]) => {
     const missingKeys = [...new Set(pubkeys)].filter(pk => !profiles[pk]);
@@ -218,47 +222,150 @@ function App() {
 
   const loadFeeds = async () => {
     try {
-      const [fetchedRides, fetchedScheduled] = await Promise.all([
-        fetchRecentRides(),
-        fetchScheduledRides()
-      ]);
-      setRides(fetchedRides);
-      setScheduledRides(fetchedScheduled);
-      let extractedKeys = [
-        ...fetchedRides.map(r => r.hexPubkey || r.pubkey),
-        ...fetchedScheduled.map(r => r.hexPubkey || r.pubkey)
-      ];
+      const now = Math.floor(Date.now() / 1000);
+      let since = now - (30 * 86400); // Default 30d
+      if (timeFilter === 'today') since = now - 86400;
+      else if (timeFilter === '7d') since = now - 7 * 86400;
+      else if (timeFilter === 'miner') since = 0;
+
+      // 1. Map Data (STREAMING LOAD)
+      // fetchRecentRides now accepts an onUpdate callback and a since timestamp.
+      fetchRecentRides((incrementalRides) => {
+        if (incrementalRides.length > 0) {
+          setRides(prev => {
+            const merged = [...prev, ...incrementalRides];
+            return merged
+              .filter((v, i, a) => a.findIndex(r => r.id === v.id) === i)
+              .sort((a, b) => b.time - a.time);
+          });
+          // Start loading profiles for the first batch immediately
+          loadAuthorProfiles(incrementalRides.slice(0, 20).map(r => r.hexPubkey || r.pubkey)).catch(() => {});
+        }
+      }, undefined, since).then(finalRides => {
+        if (finalRides.length > 0) {
+          setRides(prev => {
+            const merged = [...prev, ...finalRides];
+            return merged
+              .filter((v, i, a) => a.findIndex(r => r.id === v.id) === i)
+              .sort((a, b) => b.time - a.time);
+          });
+          loadAuthorProfiles(finalRides.map(r => r.hexPubkey || r.pubkey)).catch(() => {});
+        }
+      }).catch(console.error);
+
+      // 2. Secondary Feeds (Independent streams)
+      fetchScheduledRides().then(fetchedScheduled => {
+        setScheduledRides(prev => {
+          const merged = [...prev, ...fetchedScheduled];
+          return merged.filter((v, i, a) => a.findIndex(r => r.id === v.id) === i).sort((a, b) => a.startTime - b.startTime);
+        });
+        loadAuthorProfiles(fetchedScheduled.map(r => r.hexPubkey || r.pubkey)).catch(() => {});
+      }).catch(console.error);
+
       if (user) {
-        const personalRides = await fetchUserRides(user.pubkey);
-        setMyRides(personalRides);
-        extractedKeys.push(...personalRides.map(r => r.hexPubkey || r.pubkey));
+        fetchUserRides(user.pubkey).then(personalRides => {
+          setMyRides(prev => {
+            const merged = [...prev, ...personalRides];
+            return merged.filter((v, i, a) => a.findIndex(r => r.id === v.id) === i).sort((a, b) => b.time - a.time);
+          });
+          loadAuthorProfiles(personalRides.map(r => r.hexPubkey || r.pubkey)).catch(() => {});
+        }).catch(console.error);
       }
+
       if (viewMode === 'author' && viewingAuthor) {
-        const authoredRides = await fetchUserRides(viewingAuthor);
-        setAuthorRides(authoredRides);
-        extractedKeys.push(...authoredRides.map(r => r.hexPubkey || r.pubkey));
+        fetchUserRides(viewingAuthor).then(authoredRides => {
+          setAuthorRides(prev => {
+            const merged = [...prev, ...authoredRides];
+            return merged.filter((v, i, a) => a.findIndex(r => r.id === v.id) === i).sort((a, b) => b.time - a.time);
+          });
+          loadAuthorProfiles(authoredRides.map(r => r.hexPubkey || r.pubkey)).catch(() => {});
+        }).catch(console.error);
       }
-      if (extractedKeys.length > 0) loadAuthorProfiles(extractedKeys).catch(console.error);
     } catch (e) {
       console.error("Failed to load feeds:", e);
+    }
+  };
+
+  const loadMoreRides = async () => {
+    setIsLoadingMore(true);
+    try {
+      if (viewMode === 'personal' && user) {
+        if (!myRides.length) return;
+        const oldestTime = myRides[myRides.length - 1].time;
+        const more = await fetchUserRides(user.pubkey, oldestTime);
+        setMyRides(prev => [...prev, ...more].filter((v, i, a) => a.findIndex(r => r.id === v.id) === i).sort((a, b) => b.time - a.time));
+      } else if (viewMode === 'author' && viewingAuthor) {
+        if (!authorRides.length) return;
+        const oldestTime = authorRides[authorRides.length - 1].time;
+        const more = await fetchUserRides(viewingAuthor, oldestTime);
+        setAuthorRides(prev => [...prev, ...more].filter((v, i, a) => a.findIndex(r => r.id === v.id) === i).sort((a, b) => b.time - a.time));
+      } else if (viewMode === 'global' || viewMode === 'data') {
+        if (!rides.length) {
+          console.log("[Bikel] No initial rides to paginate from.");
+          return;
+        }
+        const oldestTime = rides[rides.length - 1].time;
+        console.log(`[Bikel] Deep dive: searching for rides older than ${new Date(oldestTime * 1000).toLocaleString()}...`);
+        const more = await fetchRecentRides(undefined, oldestTime);
+        console.log(`[Bikel] Found ${more.length} older rides.`);
+        setRides(prev => [...prev, ...more].filter((v, i, a) => a.findIndex(r => r.id === v.id) === i).sort((a, b) => b.time - a.time));
+      }
+    } catch (e) {
+      console.error("Failed to load more rides:", e);
+    } finally {
+      setIsLoadingMore(false);
+    }
+  };
+
+  const startMining = async () => {
+    if (!minerSinceDate || !minerUntilDate) {
+      alert("Please select both a start and end date.");
+      return;
+    }
+    const sinceTimestamp = Math.floor(new Date(minerSinceDate).getTime() / 1000);
+    const untilTimestamp = Math.floor(new Date(minerUntilDate).getTime() / 1000) + 86399; // Include full end day
+    if (sinceTimestamp >= untilTimestamp) {
+      alert("Start date must be before end date.");
+      return;
+    }
+    setIsMining(true);
+    setMinedCount(0);
+    try {
+      const harvested = await fetchAllRidesInRange(sinceTimestamp, untilTimestamp, (count) => setMinedCount(count));
+      setRides(prev => [...prev, ...harvested].filter((v, i, a) => a.findIndex(r => r.id === v.id) === i).sort((a, b) => b.time - a.time));
+      alert(`Successfully harvested ${harvested.length} records!\nThey are now loaded into the global dataset.`);
+    } catch (e: any) {
+      alert("Mining failed: " + (e.message || "Unknown error"));
+    } finally {
+      setIsMining(false);
     }
   };
 
   useEffect(() => {
     let mounted = true;
     (async () => {
+      console.log("[Bikel] Mounting app...");
       await connectNDK();
       if (mounted) setIsConnected(true);
+      
       const savedNwc = localStorage.getItem('bikel_nwc_uri');
       if (savedNwc) {
         setNwcURI(savedNwc);
         const success = await connectNWC(savedNwc);
         if (mounted && success) setIsNWCConnected(true);
       }
+      
       await loadFeeds();
     })();
     return () => { mounted = false; };
-  }, [user]);
+  }, []); // Run ONLY once on mount
+
+  useEffect(() => {
+    if (user) {
+      console.log("[Bikel] User session active. Fetching personal history...");
+      fetchUserRides(user.pubkey).then(setMyRides);
+    }
+  }, [user]); // Re-run only when user logs in/out
 
   useEffect(() => {
     if (selectedRide) {
@@ -319,15 +426,13 @@ function App() {
   const downloadRawPoints = () => {
     const rows = rides.flatMap(ride => {
       const date = new Date(ride.time * 1000);
-      const hourOfDay = date.getHours();
-      const dayOfWeek = date.toLocaleDateString('en-US', { weekday: 'long' });
       return ride.route.map(([lat, lng]) => [
         lat.toString(), lng.toString(),
         date.toISOString(),
         ride.distance || '0',
         (ride.hexPubkey || ride.pubkey).substring(0, 16),
-        hourOfDay.toString(),
-        dayOfWeek,
+        date.getHours().toString(),
+        date.toLocaleDateString('en-US', { weekday: 'long' }),
       ]);
     });
     downloadCSV('bikel_raw_gps_points.csv', rows, ['latitude', 'longitude', 'timestamp', 'ride_distance_mi', 'rider_id_anon', 'hour_of_day', 'day_of_week']);
@@ -344,14 +449,9 @@ function App() {
     const rows = rides.map(r => {
       const date = new Date(r.time * 1000);
       return [
-        date.toISOString(),
-        r.distance || '0',
-        r.duration || '0',
-        r.elevation || '0',
-        r.route.length.toString(),
-        (r.hexPubkey || r.pubkey).substring(0, 16),
-        date.getHours().toString(),
-        date.toLocaleDateString('en-US', { weekday: 'long' }),
+        date.toISOString(), r.distance || '0', r.duration || '0', r.elevation || '0',
+        r.route.length.toString(), (r.hexPubkey || r.pubkey).substring(0, 16),
+        date.getHours().toString(), date.toLocaleDateString('en-US', { weekday: 'long' }),
       ];
     });
     downloadCSV('bikel_ride_stats.csv', rows, ['timestamp', 'distance_mi', 'duration', 'elevation_ft', 'gps_points', 'rider_id_anon', 'hour_of_day', 'day_of_week']);
@@ -435,10 +535,10 @@ function App() {
                     <h2 style={{ margin: 0, color: '#00ccff', fontSize: '14px', letterSpacing: '1px', textTransform: 'uppercase' }}>Open Cycling Data</h2>
                   </div>
                   <select value={timeFilter} onChange={e => setTimeFilter(e.target.value as any)} style={{ background: 'rgba(0,204,255,0.1)', border: '1px solid rgba(0,204,255,0.3)', color: '#00ccff', padding: '4px 8px', borderRadius: '4px', fontSize: '12px', outline: 'none', cursor: 'pointer' }}>
-                    <option value="all">All Time</option>
                     <option value="today">Today</option>
                     <option value="7d">Last 7 Days</option>
                     <option value="30d">Last 30 Days</option>
+                    <option value="miner">Full Dataset</option>
                   </select>
                 </div>
                 <p style={{ color: '#9ba1a6', fontSize: '12px', lineHeight: 1.6, margin: 0 }}>
@@ -465,6 +565,27 @@ function App() {
                 </div>
                 <div style={{ marginTop: '12px', padding: '8px 12px', background: 'rgba(0,0,0,0.3)', borderRadius: '6px', color: '#666', fontSize: '11px' }}>
                   📅 Date range: {dataStats.dateRange}
+                </div>
+              </div>
+
+              <div className="widget glass-panel animate-fade-in" style={{ animationDelay: '0.12s' }}>
+                <h3 style={{ color: '#00ccff', fontSize: '12px', letterSpacing: '1px', textTransform: 'uppercase', marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <Database size={14} color="#00ccff" /> Historical Data Miner
+                </h3>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <div style={{ flex: 1 }}>
+                      <label style={{ display: 'block', fontSize: '10px', color: '#888', textTransform: 'uppercase', marginBottom: '4px' }}>From</label>
+                      <input type="date" value={minerSinceDate} onChange={e => setMinerSinceDate(e.target.value)} disabled={isMining} style={{ width: '100%', background: 'rgba(0,0,0,0.3)', border: '1px solid rgba(0,204,255,0.2)', color: '#fff', padding: '8px', borderRadius: '4px', fontSize: '12px', outline: 'none' }} />
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <label style={{ display: 'block', fontSize: '10px', color: '#888', textTransform: 'uppercase', marginBottom: '4px' }}>To</label>
+                      <input type="date" value={minerUntilDate} onChange={e => setMinerUntilDate(e.target.value)} disabled={isMining} style={{ width: '100%', background: 'rgba(0,0,0,0.3)', border: '1px solid rgba(0,204,255,0.2)', color: '#fff', padding: '8px', borderRadius: '4px', fontSize: '12px', outline: 'none' }} />
+                    </div>
+                  </div>
+                  <button onClick={startMining} disabled={isMining} style={{ width: '100%', background: isMining ? 'rgba(0,204,255,0.1)' : 'rgba(0,204,255,0.2)', color: '#00ccff', border: '1px solid rgba(0,204,255,0.4)', padding: '10px', borderRadius: '6px', fontSize: '12px', fontWeight: 'bold', cursor: isMining ? 'wait' : 'pointer', transition: 'all 0.2s', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '8px' }}>
+                    {isMining ? <><RefreshCw size={14} className="spin" /> Crawling {minedCount} records...</> : <><Download size={14} /> Crawl Network</>}
+                  </button>
                 </div>
               </div>
 
@@ -574,22 +695,16 @@ function App() {
                 <div className="widget glass-panel animate-fade-in" style={{ animationDelay: '0.1s', marginBottom: '16px' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
                     <h2 className="widget-title" style={{ margin: 0 }}><Zap size={16} /> Global Stats</h2>
-                    <select value={globalTimeFilter} onChange={e => setGlobalTimeFilter(e.target.value as any)} style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', color: '#fff', padding: '4px 8px', borderRadius: '4px', fontSize: '12px', outline: 'none', cursor: 'pointer' }}>
-                      <option value="today">24 Hours</option>
-                      <option value="7d">7 Days</option>
-                      <option value="30d">30 Days</option>
-                      <option value="all">All Time</option>
-                    </select>
                   </div>
                   <div className="global-stats">
                     <div className="stat-box">
-                      <div className="stat-value">
+                      <div className={`stat-value ${isSyncingFilter ? 'animate-pulse' : ''}`} style={{ transition: 'all 0.3s' }}>
                         {globalFilteredRides.reduce((acc, r) => acc + (isMetric && r.distanceKm !== undefined ? r.distanceKm : (r.distanceMiles !== undefined ? r.distanceMiles : parseFloat(r.distance || '0'))), 0).toFixed(1)}
                       </div>
                       <div className="stat-label">{isMetric ? 'KM Ridden' : 'Miles Ridden'}</div>
                     </div>
                     <div className="stat-box">
-                      <div className="stat-value">{new Set(globalFilteredRides.map(r => r.pubkey)).size}</div>
+                      <div className={`stat-value ${isSyncingFilter ? 'animate-pulse' : ''}`} style={{ transition: 'all 0.3s' }}>{new Set(globalFilteredRides.map(r => r.hexPubkey || r.pubkey)).size}</div>
                       <div className="stat-label">Active Riders</div>
                     </div>
                   </div>
@@ -820,6 +935,11 @@ function App() {
                           </div>
                         </div>
                       ))}
+                      {viewMode !== 'scheduled' && (
+                        <button onClick={loadMoreRides} disabled={isLoadingMore} className="btn btn-surface" style={{ width: '100%', padding: '12px', marginTop: '16px', fontWeight: 'bold', color: '#00ccff', border: '1px solid rgba(0,204,255,0.3)', cursor: isLoadingMore ? 'wait' : 'pointer' }}>
+                          {isLoadingMore ? 'Loading Older Rides...' : 'Load Older Rides'}
+                        </button>
+                      )}
                     </>
                   )}
                 </div>

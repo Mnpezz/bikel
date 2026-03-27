@@ -3,6 +3,7 @@ import type { NDKFilter, NDKUser } from "@nostr-dev-kit/ndk";
 import { NDKNWCWallet } from "@nostr-dev-kit/ndk-wallet";
 
 export const DEFAULT_RELAYS = [
+    "wss://relay.bikel.ink",
     "wss://relay.damus.io",
     "wss://relay.primal.net",
     "wss://nos.lol",
@@ -24,6 +25,48 @@ export async function connectNDK(): Promise<NDK> {
     console.log("[Nostr] Connected.");
 
     return globalNdk;
+}
+
+/**
+ * Fetches events with a timeout, returning whatever was collected if the timeout is reached.
+ * Supports an optional onEvent callback for streaming/incremental processing.
+ */
+async function fetchEventsWithTimeout(ndk: NDK, filters: NDKFilter[], timeoutMs: number, onEvent?: (ev: NDKEvent) => void): Promise<Set<NDKEvent>> {
+    const merged = new Set<NDKEvent>();
+    if (filters.length === 0) return merged;
+
+    let eoseCount = 0;
+    let resolved = false;
+    let resolveFn: () => void;
+
+    const done = () => {
+        if (!resolved) {
+            resolved = true;
+            resolveFn();
+        }
+    };
+
+    const promise = new Promise<void>(resolve => { resolveFn = resolve; });
+
+    const subs = filters.map(filter => {
+        const sub = ndk.subscribe([filter], { closeOnEose: false });
+        sub.on('event', (ev: NDKEvent) => {
+            merged.add(ev);
+            if (onEvent) onEvent(ev);
+        });
+        sub.on('eose', () => {
+            eoseCount++;
+            if (eoseCount >= filters.length) done();
+        });
+        return sub;
+    });
+
+    const timer = setTimeout(done, timeoutMs);
+
+    await promise;
+    clearTimeout(timer);
+    subs.forEach(s => { try { s.stop(); } catch (_) { } });
+    return merged;
 }
 
 export async function loginNip07(): Promise<NDKUser | null> {
@@ -286,46 +329,140 @@ function parseRideEvent(event: NDKEvent): RideEvent | null {
     }
 }
 
-export async function fetchRecentRides(): Promise<RideEvent[]> {
+/**
+ * Fetches recent Bikel & Runstr rides.
+ * Supports an optional callback for incremental updates (streaming).
+ */
+export async function fetchRecentRides(onUpdate?: (rides: RideEvent[]) => void, until?: number, since?: number): Promise<RideEvent[]> {
     const ndk = await connectNDK();
 
-    const filters: NDKFilter[] = [
-        { kinds: [33301 as any, 1301 as any], limit: 500 },
-        { kinds: [1 as any], "#t": ["RUNSTR", "cycling", "fitness", "bikel"], limit: 200 }
-    ];
+    // Ensure we always have a timeframe, defaulting to 30 days if not specified.
+    const thirtyDaysAgo = Math.floor(Date.now() / 1000) - (30 * 86400);
+    const effectiveSince = since !== undefined ? since : thirtyDaysAgo;
 
-    console.log("[Nostr] Fetching recent Bikel & Runstr rides...");
-    const events = await ndk.fetchEvents(filters);
-    console.log(`[Nostr] Fetched ${events.size} raw events, filtering locally...`);
+    const filters: NDKFilter[] = [
+        { kinds: [33301 as any, 1301 as any], limit: 3000, since: effectiveSince },
+        { kinds: [1 as any], "#t": ["RUNSTR", "cycling", "fitness", "bikel"], limit: 1000, since: effectiveSince }
+    ];
+    if (until) filters.forEach(f => f.until = until);
 
     const ridesMap = new Map<string, RideEvent>();
+    let lastEmitTime = 0;
+    const throttleInterval = 200; // ms
 
-    for (const event of events) {
+    const handleEvent = (event: NDKEvent) => {
         const hasBikelClient = event.getMatchingTags("client").some(t => t[1] === "bikel");
         const hasCyclingTag = event.getMatchingTags("t").some(t => ["cycling", "bikel", "bikeride", "fitness"].includes(t[1].toLowerCase()));
-
+        
         const isRunstr = event.kind === 1301 ||
             event.getMatchingTags("client").some(t => t[1].toUpperCase() === "RUNSTR") ||
             event.getMatchingTags("t").some(t => t[1].toUpperCase() === "RUNSTR");
 
-        if (event.kind !== 33301 && event.kind !== 1301 && !isRunstr) continue;
-        if (!hasBikelClient && !hasCyclingTag && !isRunstr) continue;
+        const isKind1Ride = event.kind === 1 && (hasBikelClient || hasCyclingTag);
+
+        if (event.kind !== 33301 && event.kind !== 1301 && !isRunstr && !isKind1Ride) return;
+        if (!hasBikelClient && !hasCyclingTag && !isRunstr) return;
 
         const parsed = parseRideEvent(event);
-        if (parsed && (parsed.route.length > 0 || hasBikelClient || isRunstr)) {
+        if (!parsed) return;
+
+        // If it's a Kind 1 note, it MUST have a route to be considered a "Ride"
+        // This filters out bot results, contest announcements, and general chat.
+        if (event.kind === 1 && parsed.route.length === 0) return;
+
+        const dTag = event.getMatchingTags("d")[0]?.[1] || "";
+        const key = dTag ? `${event.pubkey}-${dTag}` : event.id;
+
+        if (!ridesMap.has(key) || parsed.kind === 33301) {
+            ridesMap.set(key, parsed);
+            
+            const now = Date.now();
+            if (onUpdate && (now - lastEmitTime > throttleInterval || ridesMap.size === 1)) {
+                lastEmitTime = now;
+                onUpdate(Array.from(ridesMap.values()).sort((a, b) => b.time - a.time));
+            }
+        }
+    };
+
+    console.log("[Nostr] Fetching recent Bikel & Runstr rides...");
+    // 15s window for discovery, snappy UI via onUpdate
+    await fetchEventsWithTimeout(ndk, filters, 15000, handleEvent);
+    return Array.from(ridesMap.values()).sort((a, b) => b.time - a.time);
+}
+
+export async function fetchAllRidesInRange(since: number, until: number, onProgress?: (count: number) => void): Promise<RideEvent[]> {
+    const ndk = await connectNDK();
+    const ridesMap = new Map<string, RideEvent>();
+    let currentUntil = until;
+    
+    console.log(`[Nostr] Crawling historical Bikel & Runstr rides from ${new Date(since * 1000).toLocaleDateString()} to ${new Date(until * 1000).toLocaleDateString()}...`);
+
+    while (currentUntil > since) {
+        const filters: NDKFilter[] = [
+            { kinds: [33301 as any, 1301 as any], since, until: currentUntil, limit: 500 },
+            { kinds: [1 as any], "#t": ["RUNSTR", "cycling", "fitness", "bikel"], since, until: currentUntil, limit: 500 }
+        ];
+        
+        const eventsSet = await ndk.fetchEvents(filters);
+        if (eventsSet.size === 0) break; // No more events in this range
+
+        // Crucial fix: Sort all returned events newest first.
+        // Because each relay responds with up to 500 events, if one relay is hyper-active it might reach T-2 days, 
+        // while an inactive relay reaches T-20 days. If we jump to T-20, we MISS days T-3 to T-20 on the hyper relay.
+        // Solution: Take only the newest 500 total events, and jump only as far back as the 500th event.
+        const sortedEvents = Array.from(eventsSet).sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+        let batchEvents = sortedEvents;
+        
+        // Use a safe processing window to guarantee no relay's window is skipped
+        if (sortedEvents.length > 500) {
+            batchEvents = sortedEvents.slice(0, 500);
+        }
+
+        let oldestEventTime = currentUntil;
+        
+        for (const event of batchEvents) {
+            if (event.created_at && event.created_at < oldestEventTime) {
+                oldestEventTime = event.created_at;
+            }
+            
+            const hasBikelClient = event.getMatchingTags("client").some(t => t[1] === "bikel");
+            const hasCyclingTag = event.getMatchingTags("t").some(t => ["cycling", "bikel", "bikeride", "fitness"].includes(t[1].toLowerCase()));
+            const isRunstr = event.kind === 1301 ||
+                event.getMatchingTags("client").some(t => t[1].toUpperCase() === "RUNSTR") ||
+                event.getMatchingTags("t").some(t => t[1].toUpperCase() === "RUNSTR");
+
+            const isKind1Ride = event.kind === 1 && (hasBikelClient || hasCyclingTag);
+
+            if (event.kind !== 33301 && event.kind !== 1301 && !isRunstr && !isKind1Ride) continue;
+            if (!hasBikelClient && !hasCyclingTag && !isRunstr) continue;
+
+            const parsed = parseRideEvent(event);
+            if (!parsed) continue;
+
+            // Filter out bot results/text notes from history
+            if (event.kind === 1 && parsed.route.length === 0) continue;
+
             const dTag = event.getMatchingTags("d")[0]?.[1] || "";
             const key = dTag ? `${event.pubkey}-${dTag}` : event.id;
-
             if (!ridesMap.has(key) || parsed.kind === 33301) {
                 ridesMap.set(key, parsed);
             }
         }
+
+        if (onProgress) onProgress(ridesMap.size);
+
+        if (oldestEventTime >= currentUntil) {
+            currentUntil -= 1; 
+        } else {
+            currentUntil = oldestEventTime;
+        }
     }
 
+    console.log(`[Nostr] Finished crawling. Built dataset of ${ridesMap.size} unique rides.`);
     return Array.from(ridesMap.values()).sort((a, b) => b.time - a.time);
 }
 
-export async function fetchUserRides(pubkeyOrNpub: string): Promise<RideEvent[]> {
+export async function fetchUserRides(pubkeyOrNpub: string, until?: number): Promise<RideEvent[]> {
     const ndk = await connectNDK();
 
     let hexPubkey = pubkeyOrNpub;
@@ -338,6 +475,7 @@ export async function fetchUserRides(pubkeyOrNpub: string): Promise<RideEvent[]>
         { kinds: [33301 as any, 1301 as any], authors: [hexPubkey], limit: 200 },
         { kinds: [1 as any], authors: [hexPubkey], "#t": ["RUNSTR", "cycling", "fitness", "bikel"], limit: 100 }
     ];
+    if (until) filters.forEach(f => f.until = until);
 
     console.log(`[Nostr] Fetching rides for user ${pubkeyOrNpub}...`);
     const events = await ndk.fetchEvents(filters);
@@ -346,13 +484,16 @@ export async function fetchUserRides(pubkeyOrNpub: string): Promise<RideEvent[]>
 
     for (const event of events) {
         const parsed = parseRideEvent(event);
-        if (parsed) {
-            const dTag = event.getMatchingTags("d")[0]?.[1] || "";
-            const key = dTag ? `${event.pubkey}-${dTag}` : event.id;
+        if (!parsed) continue;
 
-            if (!ridesMap.has(key) || parsed.kind === 33301) {
-                ridesMap.set(key, parsed);
-            }
+        // Ensure Kind 1 personal events have a route (not just chat)
+        if (event.kind === 1 && parsed.route.length === 0) continue;
+
+        const dTag = event.getMatchingTags("d")[0]?.[1] || "";
+        const key = dTag ? `${event.pubkey}-${dTag}` : event.id;
+
+        if (!ridesMap.has(key) || parsed.kind === 33301) {
+            ridesMap.set(key, parsed);
         }
     }
     return Array.from(ridesMap.values()).sort((a, b) => b.time - a.time);

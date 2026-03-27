@@ -658,24 +658,34 @@ export default function App() {
         if (hex) setCurrentHex(hex);
       } catch (e) { console.error("Failed to fetch public key hex on mount:", e); }
 
-      const savedNwc = await SecureStore.getItemAsync('bikel_nwc_uri');
-      if (savedNwc) {
-        setNwcURI(savedNwc);
-        const success = await connectNWC(savedNwc);
-        if (success) setIsNWCConnected(true);
-      }
+      // ── Background inits (Staggered to prevent bridge saturation) ──────
+      (async () => {
+        // 1. NWC Handshake & Secondary systems (Delayed 10s to clear bridge for map data)
+        // This ensures the first 5-10s are dedicated purely to Nostr data and map rendering.
+        setTimeout(async () => {
+          if (!mounted) return;
+          
+          // NWC Handshake (Non-blocking)
+          try {
+            const savedNwc = await SecureStore.getItemAsync('bikel_nwc_uri');
+            if (savedNwc) {
+              setNwcURI(savedNwc);
+              // Fire NWC connect quietly in background
+              connectNWC(savedNwc).then(success => {
+                if (success && mounted) setIsNWCConnected(true);
+              }).catch(() => {});
+            }
+          } catch (e) {}
 
-      // Re-sync auto-detect task
-      await syncAutoDetectState(true);
-
-      try {
-        const { status: nStatus } = await Notifications.getPermissionsAsync();
-        if (nStatus !== 'granted') {
-          await Notifications.requestPermissionsAsync();
-        }
-      } catch (e) { }
-
-      await loadDrafts();
+          // Secondary systems (Auto-detect, drafts, notifications)
+          try {
+            await syncAutoDetectState(true);
+            await loadDrafts();
+            const { status: nStatus } = await Notifications.getPermissionsAsync();
+            if (nStatus !== 'granted') await Notifications.requestPermissionsAsync();
+          } catch (e) { }
+        }, 10000);
+      })();
     })();
 
     // Poll for new drafts every 60s
@@ -918,40 +928,65 @@ export default function App() {
 
   const loadFeeds = async (retryNum = 0) => {
     setIsFeedLoading(true);
-    setLoadingStatus(retryNum === 0 ? 'Syncing feeds...' : `Retrying... (${retryNum})`);
+    setLoadingStatus(retryNum === 0 ? 'Syncing rides...' : `Retrying... (${retryNum})`);
 
     try {
-      // Fire each fetch independently — state updates as soon as each resolves.
-      // Social feed (10s) no longer blocks recent rides (5s) from appearing.
-      const ridePromise = fetchRecentRides().then(r => { setGlobalRides(r); return r; }).catch(() => [] as RideEvent[]);
-      const schedPromise = fetchScheduledRides().then(r => { setScheduledRides(r); return r; }).catch(() => [] as ScheduledRideEvent[]);
-      const contestPromise = fetchContests().then(r => { setActiveContests(r); return r; }).catch(() => [] as ContestEvent[]);
-      const myPromise = fetchMyRides().then(r => { setMyRides(r); return r; }).catch(() => [] as RideEvent[]);
-      const socialPromise = fetchAllBikelSocial([]).then(r => {
-        if (r.length > 0) setGlobalComments(r);
-        return r;
-      }).catch(() => [] as RideComment[]);
+      // 1. Map Data (STREAMING LOAD)
+      // fetchRecentRides now accepts an onUpdate callback that fires as rides arrive.
+      fetchRecentRides((incrementalRides) => {
+        if (incrementalRides.length > 0) {
+          setGlobalRides(prev => {
+            const merged = [...prev, ...incrementalRides];
+            return merged.filter((v, i, a) => a.findIndex(r => r.id === v.id) === i).sort((a, b) => b.time - a.time);
+          });
+          setLoadingStatus(''); // Clear spinner as soon as first batch arrives
+        }
+      }).then(finalRides => {
+        // Final pass once 15s window or EOSE is hit
+        if (finalRides.length > 0) {
+          setGlobalRides(prev => {
+            const merged = [...prev, ...finalRides];
+            return merged.filter((v, i, a) => a.findIndex(r => r.id === v.id) === i).sort((a, b) => b.time - a.time);
+          });
+          const topPubkeys = finalRides.slice(0, 30).map(ride => ride.hexPubkey || ride.pubkey);
+          loadAuthorProfiles(topPubkeys).catch(() => {});
+        }
+      }).catch(() => {});
 
-      // Wait for all to finish before loading profiles and checking retry
-      const [recentRides, scheduled, contests, my, socialItems] = await Promise.all([
-        ridePromise, schedPromise, contestPromise, myPromise, socialPromise
-      ]);
+      // 2. Secondary Data (Independent streams)
+      fetchScheduledRides().then(r => { 
+        setScheduledRides(prev => {
+          const merged = [...prev, ...r];
+          return merged.filter((v, i, a) => a.findIndex(s => s.id === v.id) === i).sort((a, b) => a.startTime - b.startTime);
+        });
+        loadAuthorProfiles(r.map(s => s.hexPubkey || s.pubkey)).catch(() => {});
+      }).catch(() => {});
 
-      const extractedPubkeys = [
-        ...(recentRides as RideEvent[]).map((r: RideEvent) => r.hexPubkey || r.pubkey),
-        ...(scheduled as ScheduledRideEvent[]).map((r: ScheduledRideEvent) => r.hexPubkey || r.pubkey),
-        ...(contests as ContestEvent[]).map((c: ContestEvent) => c.hexPubkey || c.pubkey),
-      ];
-      if (extractedPubkeys.length > 0) loadAuthorProfiles(extractedPubkeys).catch(console.error);
+      fetchContests().then(r => { 
+        setActiveContests(prev => {
+          const merged = [...prev, ...r];
+          return merged.filter((v, i, a) => a.findIndex(c => c.id === v.id) === i).sort((a, b) => b.createdAt - a.createdAt);
+        });
+        loadAuthorProfiles(r.map(c => c.hexPubkey || c.pubkey)).catch(() => {});
+      }).catch(() => {});
 
-      // Retry if recent rides came back empty (relay may have been slow)
-      if ((recentRides as RideEvent[]).length === 0 && retryNum < 2) {
-        setLoadingStatus(`No rides yet, retrying...`);
-        setTimeout(() => loadFeeds(retryNum + 1), 4000);
-        return;
-      }
+      fetchMyRides().then(r => { 
+        setMyRides(prev => {
+          const merged = [...prev, ...r];
+          return merged.filter((v, i, a) => a.findIndex(ride => ride.id === v.id) === i).sort((a, b) => b.time - a.time);
+        });
+      }).catch(() => {});
 
-      setLoadingStatus('');
+      fetchAllBikelSocial([]).then(r => {
+        if (r && r.length > 0) {
+          setGlobalComments(prev => {
+            const merged = [...prev, ...r];
+            return merged.filter((v, i, a) => a.findIndex(comment => comment.id === v.id) === i).sort((a, b) => b.createdAt - a.createdAt);
+          });
+          loadAuthorProfiles(r.slice(0, 10).map(c => c.pubkey)).catch(() => {});
+        }
+      }).catch(() => {});
+
     } catch (e) {
       console.error("Critical error in loadFeeds:", e);
       setLoadingStatus('Error loading feeds.');

@@ -57,13 +57,10 @@ if (typeof global.atob === 'undefined') {
 const SECURE_STORE_KEY = 'bikel_private_key';
 
 export const DEFAULT_RELAYS = [
+    'wss://relay.bikel.ink',
     'wss://relay.damus.io',
     'wss://relay.primal.net',
     'wss://nos.lol',
-    'wss://relay.nostr.wine',   // NIP-50 search supported
-    'wss://offchain.pub',
-    'wss://purplepag.es',
-    'wss://relay.snort.social',
 ];
 
 // Relays that support NIP-50 full-text search (search field in REQ filters).
@@ -100,6 +97,7 @@ export const ESCROW_PUBKEY = "cc130b7120d00ded76d065bf0bd27e3a36a38d5268208078a1
 
 let globalNdk: NDK | null = null;
 let globalSigner: NDKPrivateKeySigner | null = null;
+let globalNdkPromise: Promise<NDK> | null = null;
 
 // Convert Uint8Array to Hex String
 const bytesToHex = (bytes: Uint8Array) =>
@@ -125,74 +123,68 @@ export async function getSigner(): Promise<NDKPrivateKeySigner> {
 }
 
 /**
- * Initializes and connects to the global NDK instance.
+ * Initializes and connects to the global NDK instance with a singleton lock.
  */
 export async function connectNDK(): Promise<NDK> {
     if (globalNdk && globalNdk.pool.connectedRelays().length > 0) return globalNdk;
 
-    console.log('[Nostr] Initializing NDK...');
-    const signer = await getSigner();
+    if (globalNdkPromise) return globalNdkPromise;
 
-    if (!globalNdk) {
-        const relays = await getRelays();
-        console.log(`[Nostr] Initializing NDK with relays: ${relays.join(', ')}`);
-        globalNdk = new NDK({
-            explicitRelayUrls: relays,
-            signer,
-        });
-    }
+    globalNdkPromise = (async () => {
+        try {
+            console.log('[Nostr] Initializing NDK singleton...');
+            const signer = await getSigner();
 
-    // If already connected, just return
-    if (globalNdk.pool.connectedRelays().length > 0) return globalNdk;
-
-    console.log('[Nostr] Connecting to relays...');
-    try {
-        await globalNdk.connect(2000); // 2s timeout for primary connection
-    } catch (e) {
-        console.warn('[Nostr] Initial connect timeout/error, will check pool...');
-    }
-
-    // Wait for at least one relay to be ready before returning, max 8s total
-    await new Promise<void>(resolve => {
-        let resolved = false;
-        const done = () => { if (!resolved) { resolved = true; resolve(); } };
-
-        // Success condition: at least one relay connected
-        const check = () => {
-            if (globalNdk?.pool.connectedRelays().length && globalNdk.pool.connectedRelays().length > 0) {
-                done();
-            } else if (!resolved) {
-                setTimeout(check, 1000);
+            if (!globalNdk) {
+                const relays = await getRelays();
+                globalNdk = new NDK({
+                    explicitRelayUrls: relays,
+                    signer,
+                });
             }
-        };
 
-        globalNdk!.pool.on('relay:ready', () => {
-            console.log('[Nostr] Relay ready event received');
-            done();
-        });
+            if (globalNdk.pool.connectedRelays().length > 0) return globalNdk;
 
-        setTimeout(check, 1000);
-        setTimeout(() => {
-            if (!resolved) {
-                console.warn('[Nostr] All relay connection attempts timed out. Returning partially-connected NDK.');
-                done();
-            }
-        }, 8000);
-    });
+            console.log('[Nostr] Connecting to relays...');
+            await globalNdk.connect(2000); // 2s timeout for primary connection
 
-    const count = globalNdk.pool.connectedRelays().length;
-    console.log(`[Nostr] Connection attempt finished. Pool size: ${count}`);
-    return globalNdk;
+            // Wait for at least one relay to be ready before returning, max 4s total
+            await new Promise<void>(resolve => {
+                let resolved = false;
+                const done = () => { if (!resolved) { resolved = true; resolve(); } };
+
+                if (globalNdk?.pool.connectedRelays().length && globalNdk.pool.connectedRelays().length > 0) {
+                    done();
+                }
+
+                globalNdk!.pool.on('relay:ready', () => {
+                    done();
+                });
+
+                setTimeout(done, 4000); // 4s total fallback
+            });
+
+            return globalNdk;
+        } finally {
+            globalNdkPromise = null; // Clear lock so we can retry if it failed entirely
+        }
+    })();
+
+    return globalNdkPromise;
 }
+
 
 /**
  * Fetches events with a timeout, returning whatever was collected if the timeout is reached.
  */
-async function fetchEventsWithTimeout(ndk: NDK, filters: NDKFilter[], timeoutMs: number): Promise<Set<NDKEvent>> {
+/**
+ * Fetches events with a timeout, returning whatever was collected if the timeout is reached.
+ * Supports an optional onEvent callback for streaming/incremental processing.
+ */
+async function fetchEventsWithTimeout(ndk: NDK, filters: NDKFilter[], timeoutMs: number, onEvent?: (ev: NDKEvent) => void): Promise<Set<NDKEvent>> {
     const merged = new Set<NDKEvent>();
     if (filters.length === 0) return merged;
 
-    // Track EOSE per subscription — resolve early once all subs have hit EOSE
     let eoseCount = 0;
     let resolved = false;
     let resolveFn: () => void;
@@ -208,17 +200,17 @@ async function fetchEventsWithTimeout(ndk: NDK, filters: NDKFilter[], timeoutMs:
 
     const subs = filters.map(filter => {
         const sub = ndk.subscribe([filter], { closeOnEose: false });
-        sub.on('event', (ev: NDKEvent) => merged.add(ev));
+        sub.on('event', (ev: NDKEvent) => {
+            merged.add(ev);
+            if (onEvent) onEvent(ev);
+        });
         sub.on('eose', () => {
             eoseCount++;
-            // Resolve as soon as every subscription has received EOSE from at least one relay.
-            // This lets us return in ~1-2s on a good connection instead of waiting the full timeout.
             if (eoseCount >= filters.length) done();
         });
         return sub;
     });
 
-    // Hard timeout as fallback — catches slow/unresponsive relays
     const timer = setTimeout(done, timeoutMs);
 
     await promise;
@@ -365,7 +357,7 @@ export async function publishRide(
     const secs = durationSeconds % 60;
     const durationStr = `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
 
-    event.kind = 33301;
+    event.kind = 1301;
     event.tags = [
         ['d', Date.now().toString()],
         ['title', title || "Bikel Ride"],
@@ -428,50 +420,29 @@ export async function publishRide(
         }
     }
 
-    let kind33301Success = false;
     let kind1301Success = false;
 
-    // --- Kind 33301 ---
+    // --- Kind 1301 (Standard Fitness Event) ---
     try {
-        if (onLog) onLog('[Nostr] Signing Kind 33301...');
+        if (onLog) onLog('[Nostr] Signing Kind 1301 (Standardized Fitness Event)...');
         await event.sign();
-        if (onLog) onLog(`[Nostr] Event ID: ${event.id.substring(0, 8)}...`);
 
-        if (onLog) onLog('[Nostr] Publishing Kind 33301...');
+        if (onLog) onLog(`[Nostr] Event ID: ${event.id.substring(0, 8)}...`);
+        if (onLog) onLog('[Nostr] Publishing...');
         const relaySet = await event.publish(undefined, 15000);
 
         const okRelays = relaySet.size;
-        if (onLog) onLog(`[Nostr] Kind 33301 Result: ${okRelays} OK`);
+        if (onLog) onLog(`[Nostr] Publish Result: ${okRelays} OK`);
 
         if (okRelays > 0) {
-            kind33301Success = true;
+            kind1301Success = true;
         }
     } catch (e: any) {
-        if (onLog) onLog(`[Nostr] Kind 33301 ERROR: ${e.message || e}`);
+        if (onLog) onLog(`[Nostr] Publish ERROR: ${e.message || e}`);
     }
 
-    // --- Kind 1301 ---
-    try {
-        const runstrEvent = new NDKEvent(ndk);
-        runstrEvent.kind = 1301;
-        runstrEvent.tags = [...event.tags];
-        runstrEvent.content = event.content;
-
-        if (onLog) onLog('[Nostr] Signing Kind 1301...');
-        await runstrEvent.sign();
-
-        if (onLog) onLog('[Nostr] Publishing Kind 1301...');
-        const relaySet1301 = await runstrEvent.publish(undefined, 15000);
-
-        if (onLog) onLog(`[Nostr] Kind 1301 Result: ${relaySet1301.size} OK`);
-        if (relaySet1301.size > 0) kind1301Success = true;
-    } catch (e: any) {
-        console.warn("[Nostr] Failed to dual-publish RunSTR event", e);
-        if (onLog) onLog(`[Nostr] Kind 1301 ERROR: ${e.message || e}`);
-    }
-
-    if (!kind33301Success && !kind1301Success) {
-        throw new Error("Relays failed to accept the ride event on specialized kinds (33301, 1301). Check Debug Logs.");
+    if (!kind1301Success) {
+        throw new Error("Relays failed to accept the ride event. Check Debug Logs.");
     }
 
     return event.id;
@@ -484,9 +455,18 @@ export async function connectNWC(pairingCode: string): Promise<boolean> {
     try {
         // @ts-ignore
         nwcWallet = new NDKNWCWallet(ndk, { pairingCode });
-        await new Promise<void>((resolve, reject) => {
-            const timeout = setTimeout(() => reject("NWC connection timeout"), 10000);
-            nwcWallet!.once("ready", () => { clearTimeout(timeout); resolve(); });
+
+        // Hard 5s timeout for NWC — if it fails, we keep the app moving!
+        await new Promise<void>((resolve) => {
+            const timeout = setTimeout(() => {
+                console.warn("[NWC] timeout triggered");
+                resolve();
+            }, 5000);
+            nwcWallet!.once("ready", () => {
+                clearTimeout(timeout);
+                console.log("[NWC - Mobile] Ready event received");
+                resolve();
+            });
         });
         // @ts-ignore
         ndk.wallet = nwcWallet;
@@ -664,7 +644,9 @@ function parseRideEvent(event: NDKEvent): RideEvent | null {
                 : `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`,
             rawDuration: durationSecs,
             visibility,
-            route,
+            route: route.length > 100
+                ? route.filter((_, i) => i % Math.ceil(route.length / 100) === 0 || i === route.length - 1)
+                : route,
             kind: event.kind as 33301 | 1301 | 1,
             title: titleTag,
             description,
@@ -830,52 +812,51 @@ export interface ContestEvent {
     kind: 33401; // ← updated from 31924
 }
 
-export async function fetchRecentRides(): Promise<RideEvent[]> {
+export async function fetchRecentRides(onUpdate?: (rides: RideEvent[]) => void): Promise<RideEvent[]> {
     const ndk = await connectNDK();
     const filters: NDKFilter[] = [
-        // Simple kind-only filters — relays handle these reliably without tag indexing
         { kinds: [33301 as any, 1301 as any], limit: 100 },
-        // '#t' is a NIP-12 standard indexed tag — relays support this
         { kinds: [1 as any], '#t': ['bikel'], limit: 50 },
         { kinds: [1 as any], '#t': ['cycling'], limit: 50 },
-        // NOTE: '#client' is NOT a standard indexed tag — removed, returns empty on all relays
     ];
-    console.log("[Nostr] Fetching recent Bikel & Runstr rides...");
-    const events = await fetchEventsWithTimeout(ndk, filters, 5000);
-    console.log(`[Nostr] Fetched ${events.size} raw events, filtering locally...`);
-
+    
     const ridesMap = new Map<string, RideEvent>();
+    let lastEmitTime = 0;
+    const throttleInterval = 200; // ms
 
-    for (const event of events) {
+    const handleEvent = (event: NDKEvent) => {
         const hasBikelClient = event.getMatchingTags("client").some(t => t[1] === "bikel");
         const hasCyclingTag = event.getMatchingTags("t").some(t => ["cycling", "bikel", "bikeride", "fitness"].includes(t[1].toLowerCase()));
-
         const isRunstr = event.kind === 1301 ||
             event.getMatchingTags("client").some(t => t[1].toUpperCase() === "RUNSTR") ||
             event.getMatchingTags("t").some(t => t[1].toUpperCase() === "RUNSTR");
 
-        if (event.kind !== 33301 && event.kind !== 1301 && event.kind !== 1 && !isRunstr) continue;
-        if (!hasBikelClient && !hasCyclingTag && !isRunstr) continue;
+        if (event.kind !== 33301 && event.kind !== 1301 && event.kind !== 1 && !isRunstr) return;
+        if (!hasBikelClient && !hasCyclingTag && !isRunstr) return;
 
         const parsed = parseRideEvent(event);
-        if (!parsed) continue;
+        if (!parsed) return;
+        if (event.kind === 1 && parsed.route.length === 0) return;
 
-        // Strict filter for Kind 1: Must have a route to be considered a "Ride" for the map
-        if (event.kind === 1 && parsed.route.length === 0) continue;
-
-        if (parsed.route.length > 0 || hasBikelClient || isRunstr) {
-            // Filter noise: empty external posts
-            if (isRunstr && (parsed.distance === "0.00" || parsed.distance === "0") && parsed.duration === "0m 0s") continue;
-
-            const dTag = event.getMatchingTags("d")[0]?.[1] || "";
-            const key = dTag ? `${event.pubkey}-${dTag}` : event.id;
-
-            // Prefer Kind 33301 if both exist
-            if (!ridesMap.has(key) || parsed.kind === 33301) {
-                ridesMap.set(key, parsed);
+        const dTag = event.getMatchingTags("d")[0]?.[1] || "";
+        const key = dTag ? `${event.pubkey}-${dTag}` : event.id;
+        
+        if (!ridesMap.has(key) || parsed.kind === 33301) {
+            ridesMap.set(key, parsed);
+            
+            const now = Date.now();
+            if (onUpdate && (now - lastEmitTime > throttleInterval || ridesMap.size === 1)) {
+                lastEmitTime = now;
+                // Batch-friendly incremental update
+                onUpdate(Array.from(ridesMap.values()).sort((a, b) => b.time - a.time));
             }
         }
-    }
+    };
+    
+    console.log("[Nostr] Fetching recent Bikel & Runstr rides...");
+    
+    // Use a longer 15s window for comprehensive discovery, but the UI will be snappy thanks to onUpdate.
+    await fetchEventsWithTimeout(ndk, filters, 15000, handleEvent);
     return Array.from(ridesMap.values()).sort((a, b) => b.time - a.time);
 }
 
@@ -1307,18 +1288,15 @@ export async function fetchAllBikelSocial(rideIds: string[] = [], limit = 50): P
 
     // Run hashtag fetch and NIP-50 search fetch in parallel
     const [hashtagEvents, searchEvents] = await Promise.all([
-        fetchEventsWithTimeout(ndk, filters, 10000),
+        fetchEventsWithTimeout(ndk, filters, 6000), // Lowered from 10s to 6s
         (async () => {
             try {
-                // Connect a small pool to only NIP-50 relays for the search queries
                 const searchNdk = new NDK({
                     explicitRelayUrls: NIP50_RELAYS,
                     signer: ndk.signer,
                 });
-                await searchNdk.connect(1500);
-                // Give relays 1.5s to connect, then fire search queries with 4s timeout
-                await new Promise(r => setTimeout(r, 1500));
-                return await fetchEventsWithTimeout(searchNdk, searchFilters, 4000);
+                await searchNdk.connect(1000); // 1s connect timeout
+                return await fetchEventsWithTimeout(searchNdk, searchFilters, 3500); // 3.5s fetch
             } catch (e) {
                 console.warn('[Social] NIP-50 search failed (non-fatal):', e);
                 return new Set<NDKEvent>();

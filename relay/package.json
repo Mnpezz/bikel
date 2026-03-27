@@ -1,0 +1,20 @@
+{
+  "name": "bikel-relay-tools",
+  "version": "1.0.0",
+  "description": "Deployment and maintenance tools for the dedicated Bikel strfry relay",
+  "scripts": {
+    "start": "docker compose up -d",
+    "stop": "docker compose down",
+    "backfill": "npx tsc ; node dist/stock_relay.js"
+  },
+  "dependencies": {
+    "@nostr-dev-kit/ndk": "^2.11.0",
+    "ws": "^8.16.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.30",
+    "@types/ws": "^8.5.10",
+    "tsx": "^4.7.1",
+    "typescript": "^5.4.3"
+  }
+}

@@ -92,7 +92,35 @@ Because the `/backend` Bot needs an infinite server process (to constantly liste
 
 ---
 
-## 4. Mobile App Distribution (GitHub Releases)
+## 4. Compiling the Mobile App (APK)
+
+Since Bikel uses **Expo** but is configured with native modules (like Background Location), we use the provided **`install.sh`** script to automate the build and sideloading process.
+
+### Step-by-Step Compilation & Sideload:
+1. Ensure your Android phone is on the same WiFi network and **Wireless Debugging** is enabled in Developer Options.
+2. Connect to your phone via ADB (if using wireless):
+   ```bash
+   adb connect <YOUR_PHONE_IP_ADDRESS>:<PORT>
+   ```
+3. Run the automated build and install script:
+   ```bash
+   cd apk
+   ./install.sh --release
+   ```
+   *This script will automatically:*
+   - Generate the native Android project (`prebuild`).
+   - Bundle the JavaScript assets for offline use.
+   - Compile the production APK via Gradle.
+   - Sideload the APK onto your connected device.
+   - Launch the app.
+
+4. **Locate your APK for sharing**: 
+   If you just want the file to upload to GitHub Releases:
+   `apk/android/app/build/outputs/apk/release/app-release.apk`
+
+---
+
+## 5. Mobile App Distribution (GitHub Releases)
 
 1. Go to your `bikel` repository on GitHub.
 2. Look at the right sidebar and click **Releases**.
