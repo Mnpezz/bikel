@@ -549,6 +549,7 @@ export default function App() {
   const isSyncingRef = useRef(false);
   const pollerRef = useRef<NodeJS.Timeout | null>(null);
   const chatScrollRef = useRef<any>(null);
+  const pendingPubkeysRef = useRef<Set<string>>(new Set());
   const syncAutoDetectState = async (forceRestart = false) => {
     if (isSyncingRef.current) return;
     isSyncingRef.current = true;
@@ -560,34 +561,38 @@ export default function App() {
 
       if (isEnabled) {
         if (bgPerm.status === 'granted') {
-          if (!isRunning || forceRestart) {
-            if (isRunning && forceRestart) {
-              await logEvent("🛑 Auto-detect reset (manual toggle)");
-              await Location.stopLocationUpdatesAsync(DRAFT_TASK);
-              // Android LocationManager needs time to deregister before re-registering same task
-              await new Promise(r => setTimeout(r, 400));
-            }
-            // Restart task if it should be running but isn't, or if we're forcing a refresh
-            if (!isRunning) await logEvent("🔄 Auto-detect starting...");
-            await Location.startLocationUpdatesAsync(DRAFT_TASK, {
-              accuracy: Location.Accuracy.High,
-              distanceInterval: 10,
-              timeInterval: 8000,
-              foregroundService: {
-                notificationTitle: 'Bikel auto-detect active',
-                notificationBody: 'Watching for bike rides in background…',
-                notificationColor: '#444',
-              },
-              pausesUpdatesAutomatically: false,
-              showsBackgroundLocationIndicator: false,
-            });
-          } else {
-            // Already running and no force-restart needed
-            // logEvent("✅ Auto-detect: ACTIVE"); // Silent verify
+          // Always call start to ensure notification is visible on launch, 
+          // but only stop/restart if forceRestart is explicitly true.
+          if (isRunning && forceRestart) {
+            await logEvent("🛑 Auto-detect reset (manual toggle)");
+            await Location.stopLocationUpdatesAsync(DRAFT_TASK);
+            await new Promise(r => setTimeout(r, 400));
           }
+
+          if (!isRunning) await logEvent("🔄 Auto-detect starting...");
+          else await logEvent("✅ Auto-detect sync: already running");
+          
+          // Android 12+ Restriction: Cannot start foreground service if app is not active.
+          if (AppState.currentState !== 'active') {
+            await logEvent("⚠️ Skipping foreground service refresh (app in background)");
+            setAutoDetect(true);
+            return;
+          }
+
+          await Location.startLocationUpdatesAsync(DRAFT_TASK, {
+            accuracy: Location.Accuracy.High,
+            distanceInterval: 10,
+            timeInterval: 8000,
+            foregroundService: {
+              notificationTitle: 'Bikel auto-detect active',
+              notificationBody: 'Watching for bike rides in background',
+              notificationColor: '#444',
+            },
+            pausesUpdatesAutomatically: false,
+            showsBackgroundLocationIndicator: false,
+          });
           setAutoDetect(true);
         } else {
-          // Permission lost
           await logEvent(`⚠️ Auto-detect disabled (missing permission: ${bgPerm.status})`);
           await AsyncStorage.setItem('bikel_auto_detect', 'false');
           if (isRunning) await Location.stopLocationUpdatesAsync(DRAFT_TASK);
@@ -595,10 +600,19 @@ export default function App() {
         }
       } else {
         if (isRunning) {
-          await logEvent("🛑 Auto-detect cleanup (lingering task)");
-          await Location.stopLocationUpdatesAsync(DRAFT_TASK);
+          if (!forceRestart) {
+            // Healing: If it's running but state is unknown, sync UP instead of DOWN
+            await logEvent("🩹 Auto-detect healing (found active ride)");
+            await AsyncStorage.setItem('bikel_auto_detect', 'true');
+            setAutoDetect(true);
+          } else {
+            await logEvent("🛑 Auto-detect cleanup (manual off)");
+            await Location.stopLocationUpdatesAsync(DRAFT_TASK);
+            setAutoDetect(false);
+          }
+        } else {
+          setAutoDetect(false);
         }
-        setAutoDetect(false);
       }
     } catch (e) { console.error('[Sync] Failed:', e); } finally {
       isSyncingRef.current = false;
@@ -662,28 +676,32 @@ export default function App() {
       (async () => {
         // 1. NWC Handshake & Secondary systems (Delayed 10s to clear bridge for map data)
         // This ensures the first 5-10s are dedicated purely to Nostr data and map rendering.
+        // 1. Critical Background Systems (2s delay)
         setTimeout(async () => {
           if (!mounted) return;
-          
-          // NWC Handshake (Non-blocking)
           try {
-            const savedNwc = await SecureStore.getItemAsync('bikel_nwc_uri');
-            if (savedNwc) {
-              setNwcURI(savedNwc);
-              // Fire NWC connect quietly in background
-              connectNWC(savedNwc).then(success => {
-                if (success && mounted) setIsNWCConnected(true);
-              }).catch(() => {});
-            }
-          } catch (e) {}
-
-          // Secondary systems (Auto-detect, drafts, notifications)
-          try {
-            await syncAutoDetectState(true);
+            // Check auto-detect but DON'T force-restart existing tasks
+            await syncAutoDetectState(); 
             await loadDrafts();
             const { status: nStatus } = await Notifications.getPermissionsAsync();
             if (nStatus !== 'granted') await Notifications.requestPermissionsAsync();
           } catch (e) { }
+        }, 2000);
+
+        // 2. Heavy Network Systems (10s delay)
+        setTimeout(async () => {
+          if (!mounted) return;
+          try {
+            const savedNwc = await SecureStore.getItemAsync('bikel_nwc_uri');
+            if (savedNwc) {
+              setNwcURI(savedNwc);
+              connectNWC(savedNwc).then(success => {
+                if (success && mounted) setIsNWCConnected(true);
+              }).catch(() => {});
+            }
+          } catch (e) { }
+          // Draft sync to Nostr (Kind 33301/33302) is not implemented yet.
+          // finalizeDraft() handles publishing on user interaction.
         }, 10000);
       })();
     })();
@@ -832,7 +850,8 @@ export default function App() {
     const shapes: any[] = [];
 
     // 1. Draw all global rides first (bottom layers)
-    filteredGlobalRides.forEach(ride => {
+    // LIMIT to top 300 recent rides to ensure Map fluidity on mobile.
+    filteredGlobalRides.slice(0, 300).forEach(ride => {
       if (!ride.route || ride.route.length === 0) return;
 
       const { color, opacity } = rideAgeColor(ride.time);
@@ -908,13 +927,23 @@ export default function App() {
   }, [showDiscussion, selectedDiscussionRide]);
 
   const loadAuthorProfiles = async (pubkeys: string[]) => {
-    const missingKeys = [...new Set(pubkeys)].filter(pk => !profiles[pk]);
-    if (missingKeys.length === 0) return;
+    // 1. Deduplicate against existing profiles AND pending requests
+    const toFetch = [...new Set(pubkeys)].filter(pk => !profiles[pk] && !pendingPubkeysRef.current.has(pk));
+    if (toFetch.length === 0) return;
+
+    // 2. Mark as pending immediately
+    toFetch.forEach(pk => pendingPubkeysRef.current.add(pk));
+
     try {
-      const newProfiles = await fetchProfiles(missingKeys);
+      const newProfiles = await fetchProfiles(toFetch);
       setProfiles(prev => ({ ...prev, ...newProfiles }));
     } catch (e) {
       console.error("Failed to load author profiles", e);
+    } finally {
+      // 3. Keep in pending for a bit (5s) to prevent immediate re-fetch if first one failed or is slow to propagate to state
+      setTimeout(() => {
+        toFetch.forEach(pk => pendingPubkeysRef.current.delete(pk));
+      }, 5000);
     }
   };
 
@@ -936,18 +965,26 @@ export default function App() {
       fetchRecentRides((incrementalRides) => {
         if (incrementalRides.length > 0) {
           setGlobalRides(prev => {
-            const merged = [...prev, ...incrementalRides];
-            return merged.filter((v, i, a) => a.findIndex(r => r.id === v.id) === i).sort((a, b) => b.time - a.time);
+            const obj: { [key: string]: RideEvent } = {};
+            prev.forEach(r => obj[r.id] = r);
+            incrementalRides.forEach(r => obj[r.id] = r);
+            return Object.values(obj).sort((a, b) => b.time - a.time);
           });
           setLoadingStatus(''); // Clear spinner as soon as first batch arrives
+          // Fetch top 10 profiles immediately for the first incremental batch
+          const topPubkeys = incrementalRides.slice(0, 10).map(ride => ride.hexPubkey || ride.pubkey);
+          loadAuthorProfiles(topPubkeys).catch(() => {});
         }
       }).then(finalRides => {
         // Final pass once 15s window or EOSE is hit
         if (finalRides.length > 0) {
           setGlobalRides(prev => {
-            const merged = [...prev, ...finalRides];
-            return merged.filter((v, i, a) => a.findIndex(r => r.id === v.id) === i).sort((a, b) => b.time - a.time);
+            const obj: { [key: string]: RideEvent } = {};
+            prev.forEach(r => obj[r.id] = r);
+            finalRides.forEach(r => obj[r.id] = r);
+            return Object.values(obj).sort((a, b) => b.time - a.time);
           });
+          // LIMIT to top 30 to avoid thread lock
           const topPubkeys = finalRides.slice(0, 30).map(ride => ride.hexPubkey || ride.pubkey);
           loadAuthorProfiles(topPubkeys).catch(() => {});
         }
@@ -956,36 +993,40 @@ export default function App() {
       // 2. Secondary Data (Independent streams)
       fetchScheduledRides().then(r => { 
         setScheduledRides(prev => {
-          const merged = [...prev, ...r];
-          return merged.filter((v, i, a) => a.findIndex(s => s.id === v.id) === i).sort((a, b) => a.startTime - b.startTime);
+          const obj: { [key: string]: ScheduledRideEvent } = {};
+          prev.forEach(s => obj[s.id] = s);
+          r.forEach(s => obj[s.id] = s);
+          return Object.values(obj).sort((a, b) => a.startTime - b.startTime);
         });
         loadAuthorProfiles(r.map(s => s.hexPubkey || s.pubkey)).catch(() => {});
       }).catch(() => {});
 
       fetchContests().then(r => { 
         setActiveContests(prev => {
-          const merged = [...prev, ...r];
-          return merged.filter((v, i, a) => a.findIndex(c => c.id === v.id) === i).sort((a, b) => b.createdAt - a.createdAt);
+          const obj: { [key: string]: ContestEvent } = {};
+          prev.forEach(c => obj[c.id] = c);
+          r.forEach(c => obj[c.id] = c);
+          return Object.values(obj).sort((a, b) => b.createdAt - a.createdAt);
         });
         loadAuthorProfiles(r.map(c => c.hexPubkey || c.pubkey)).catch(() => {});
       }).catch(() => {});
 
       fetchMyRides().then(r => { 
         setMyRides(prev => {
-          const merged = [...prev, ...r];
-          return merged.filter((v, i, a) => a.findIndex(ride => ride.id === v.id) === i).sort((a, b) => b.time - a.time);
+          const obj: { [key: string]: RideEvent } = {};
+          prev.forEach(ride => obj[ride.id] = ride);
+          r.forEach(ride => obj[ride.id] = ride);
+          return Object.values(obj).sort((a, b) => b.time - a.time);
         });
       }).catch(() => {});
 
-      fetchAllBikelSocial([]).then(r => {
-        if (r && r.length > 0) {
-          setGlobalComments(prev => {
-            const merged = [...prev, ...r];
-            return merged.filter((v, i, a) => a.findIndex(comment => comment.id === v.id) === i).sort((a, b) => b.createdAt - a.createdAt);
-          });
-          loadAuthorProfiles(r.slice(0, 10).map(c => c.pubkey)).catch(() => {});
+      fetchAllBikelSocial((comms) => {
+        if (comms && comms.length > 0) {
+          setGlobalComments(comms);
+          // Only load first few profiles to avoid bridge spike
+          loadAuthorProfiles(comms.slice(0, 15).map(c => c.pubkey)).catch(() => {});
         }
-      }).catch(() => {});
+      }, []).catch(() => {});
 
     } catch (e) {
       console.error("Critical error in loadFeeds:", e);
@@ -1081,28 +1122,21 @@ export default function App() {
         loadAuthorProfiles(msgs.map(m => m.pubkey).filter(Boolean) as string[]).catch(console.error);
       } else {
         const rideIds = globalRides.slice(0, 20).map(r => r.id);
-        const comms = await fetchAllBikelSocial(rideIds);
-
-        // Merge globalRides into the activity feed
-        // Use a Map for effective deduplication.
-        // mappedRides was removed — the activity feed shows only what fetchAllBikelSocial
-        // explicitly fetches (community-tagged posts). Rides are already in the Recent Rides tab.
-        // Priority: comms (fresh fetch) wins over globalComments (prior cache).
-        const uniqueMap: { [id: string]: RideComment } = {};
-        globalComments.forEach(c => { uniqueMap[c.id] = c; }); // prior cache — lowest priority
-        comms.forEach(c => { uniqueMap[c.id] = c; });           // fresh fetch — highest priority
-
-        const unified: RideComment[] = Object.values(uniqueMap);
-        unified.sort((a, b) => b.createdAt - a.createdAt);
-
-        await logEvent(`📥 Social: merged ${comms.length} new items. Total persistent: ${unified.length}`);
-        const sliced = unified.slice(0, 150);
-        setGlobalComments(sliced);
-        loadAuthorProfiles(sliced.map((c: RideComment) => c.pubkey).filter(Boolean) as string[]).catch(console.error);
-        // Load reactions for each card, staggered 150ms apart so we don't flood the relay
-        sliced.forEach((item: RideComment, i: number) => {
-          setTimeout(() => loadReactions(item.id), i * 150);
+        fetchAllBikelSocial((comms) => {
+          const sliced = comms.slice(0, 150);
+          setGlobalComments(sliced);
+          loadAuthorProfiles(sliced.map((c: RideComment) => c.pubkey).filter(Boolean) as string[]).catch(console.error);
+          
+          // Staggered reaction load for visible items
+          sliced.slice(0, 10).forEach((item: RideComment, i: number) => {
+            setTimeout(() => loadReactions(item.id), i * 150);
+          });
+        }, rideIds).then(() => {
+          setIsSocialLoading(false);
+        }).catch(() => {
+          setIsSocialLoading(false);
         });
+        return; // handleSocialRefresh is now handled via the promise/callback
       }
     } catch (e: any) {
       const err = e.message || String(e);

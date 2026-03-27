@@ -1164,9 +1164,9 @@ export async function fetchComments(eventId: string): Promise<RideComment[]> {
     console.log(`[Nostr - Mobile] Fetching comments for event ${eventId}...`);
     const events = await fetchEventsWithTimeout(ndk, [filter], 5000);
     const comments: RideComment[] = [];
-    for (const event of events) {
+    Array.from(events).forEach(event => {
         comments.push({ id: event.id, pubkey: event.author?.npub || event.pubkey, hexPubkey: event.pubkey, content: event.content, createdAt: event.created_at || Math.floor(Date.now() / 1000) });
-    }
+    });
     return comments.sort((a, b) => a.createdAt - b.createdAt);
 }
 
@@ -1177,9 +1177,9 @@ export async function fetchProfiles(pubkeys: string[]): Promise<Record<string, a
     console.log(`[Nostr] Bulk fetching ${pubkeys.length} profiles...`);
     const events = await fetchEventsWithTimeout(ndk, [filter], 6000);
     const profiles: Record<string, any> = {};
-    for (const ev of events) {
+    Array.from(events).forEach(ev => {
         try { profiles[ev.pubkey] = JSON.parse(ev.content); } catch (e) { }
-    }
+    });
     return profiles;
 }
 
@@ -1212,7 +1212,7 @@ export async function fetchReactions(eventId: string): Promise<ReactionSummary[]
     const me = await signer.user();
     const events = await fetchEventsWithTimeout(ndk, [{ kinds: [7 as any], '#e': [eventId], limit: 200 }], 5000);
     const counts = new Map<string, { count: number; reactedByMe: boolean; myReactionId?: string }>();
-    for (const ev of events) {
+    Array.from(events).forEach(ev => {
         const emoji = ev.content || '👍';
         const existing = counts.get(emoji) || { count: 0, reactedByMe: false };
         const isMine = ev.pubkey === me.pubkey;
@@ -1221,7 +1221,7 @@ export async function fetchReactions(eventId: string): Promise<ReactionSummary[]
             reactedByMe: existing.reactedByMe || isMine,
             myReactionId: isMine ? ev.id : existing.myReactionId,
         });
-    }
+    });
     return Array.from(counts.entries())
         .map(([emoji, data]) => ({ emoji, ...data }))
         .sort((a, b) => b.count - a.count);
@@ -1247,9 +1247,141 @@ export async function deleteReaction(reactionId: string): Promise<boolean> {
     try { await event.publish(); return true; } catch (e) { return false; }
 }
 
+/**
+ * Helper to convert a raw NDKEvent into a RideComment object with Bikel-specific filtering.
+ */
+export function eventToComment(e: NDKEvent, searchEvents: Set<NDKEvent> = new Set()): RideComment | null {
+    const isRide = e.kind === 1301 || e.kind === 33301;
+    const isBikelClient = e.getMatchingTags('client').some(t => t[1] === 'bikel');
+    const hasBikelTag = e.getMatchingTags('t').some(t => ['bikel', 'bikeride', 'fixie', 'biketour', 'cycling', 'bicycle', 'bike', 'mountainbike', 'fixedgear', 'fixedgearbike', 'fixedgearbicycle', 'bikepacking', 'gravel', 'mtb', 'roadbike', 'cyclinglife', 'cyclist', 'velo'].includes(t[1].toLowerCase()));
 
-export async function fetchAllBikelSocial(rideIds: string[] = [], limit = 50): Promise<RideComment[]> {
+    // For ride events: only include bikel-tagged to exclude RunSTR walking workouts
+    if (isRide && !hasBikelTag) return null;
+
+    const referencedEventId = e.tags.find(t => t[0] === 'e')?.[1] || '';
+    const fromSearch = searchEvents.has(e);
+
+    // For kind-1 posts: need a bikel tag, or an #e ref to a ride, or came from search
+    if (!isRide && !hasBikelTag && !referencedEventId && !fromSearch) return null;
+
+    // Skip very short content (spam/bots)
+    if (!isRide && e.content.trim().length < 5) return null;
+
+    // For search results: verify content actually contains bike keywords
+    if (fromSearch && !hasBikelTag) {
+        const contentLower = e.content.toLowerCase();
+        const hasBikeWord = ['bicycle', 'fixie', 'cycling', 'bike', 'biking', 'cyclist', 'velodrome', 'peloton'].some(w => contentLower.includes(w));
+        if (!hasBikeWord) return null;
+    }
+
+    // Extract rich data from events
+    let displayContent = e.content;
+    let rideTitle = '';
+    let image: string | undefined;
+    let distance: string | undefined;
+    let duration: string | undefined;
+
+    // Extract image from any event type: 'image' tag, 'imeta' tag, or URL in content
+    image = e.getMatchingTags('image')[0]?.[1];
+    if (!image) {
+        const imeta = e.getMatchingTags('imeta')[0];
+        if (imeta) {
+            const urlEntry = imeta.find((t: string) => t.startsWith('url '));
+            if (urlEntry) image = urlEntry.substring(4);
+        }
+    }
+    if (!image) {
+        const urlMatch = e.content.match(
+            /https?:\/\/\S+\.(jpg|jpeg|png|webp|gif)|https?:\/\/(image\.nostr\.build|nostr\.build|void\.cat|i\.imgur|cdn\.satellite\.earth)\S*/i
+        );
+        if (urlMatch) image = urlMatch[0];
+    }
+
+    // For kind-1 posts: strip lines that are only a URL
+    if (!isRide) {
+        const cleaned = e.content.split('\n')
+            .filter((line: string) => !/^https?:\/\/\S+$/.test(line.trim()))
+            .join('\n')
+            .trim();
+        displayContent = cleaned.length > 0 ? cleaned : e.content;
+    }
+
+    if (isRide) {
+        rideTitle = e.getMatchingTags('title')[0]?.[1] || '';
+        image = e.getMatchingTags('image')[0]?.[1] || image;
+        distance = e.getMatchingTags('distance')[0]?.[1];
+        const durationRaw = e.getMatchingTags('duration')[0]?.[1];
+        if (durationRaw) {
+            const secs = parseInt(durationRaw, 10);
+            if (!isNaN(secs)) {
+                const h = Math.floor(secs / 3600);
+                const m = Math.floor((secs % 3600) / 60);
+                duration = h > 0 ? `${h}h ${m}m` : `${m}m`;
+            } else {
+                duration = durationRaw;
+            }
+        }
+        if (!e.content || e.content.startsWith('{')) {
+            displayContent = rideTitle
+                ? `${rideTitle}`
+                : distance ? `Rode ${parseFloat(distance).toFixed(1)} miles` : 'Shared a ride 🚲';
+        }
+    }
+
+    return {
+        id: e.id,
+        pubkey: e.pubkey,
+        hexPubkey: e.pubkey,
+        content: displayContent,
+        createdAt: e.created_at || 0,
+        rideId: isRide ? e.id : referencedEventId,
+        title: rideTitle || undefined,
+        isRide,
+        image,
+        distance,
+        duration,
+        kind: e.kind,
+        hasRoute: isRide && (
+            !!e.getMatchingTags('g')[0]?.[1] ||
+            !!e.getMatchingTags('route')[0]?.[1]
+        ),
+    };
+}
+
+export async function fetchAllBikelSocial(onUpdate?: (data: RideComment[]) => void, rideIds: string[] = [], limit = 50): Promise<RideComment[]> {
     const ndk = await connectNDK();
+    const uniqueMap = new Map<string, RideComment>();
+    const searchEvents = new Set<NDKEvent>(); // Track which events came from search for filtering
+
+    // Throttling logic
+    let lastUpdate = 0;
+    let pendingUpdate = false;
+    const throttleUpdate = () => {
+        if (!onUpdate || pendingUpdate) return;
+        const now = Date.now();
+        const diff = now - lastUpdate;
+        if (diff > 200) {
+            onUpdate(Array.from(uniqueMap.values()).sort((a, b) => b.createdAt - a.createdAt));
+            lastUpdate = now;
+        } else {
+            pendingUpdate = true;
+            setTimeout(() => {
+                onUpdate(Array.from(uniqueMap.values()).sort((a, b) => b.createdAt - a.createdAt));
+                lastUpdate = Date.now();
+                pendingUpdate = false;
+            }, 200 - diff);
+        }
+    };
+
+    const handleNewEvent = (e: NDKEvent, isFromSearch = false) => {
+        if (uniqueMap.has(e.id)) return;
+        if (isFromSearch) searchEvents.add(e);
+        const comment = eventToComment(e, searchEvents);
+        if (comment) {
+            uniqueMap.set(e.id, comment);
+            throttleUpdate();
+        }
+    };
 
     // Hashtag filters — work on all standard relays
     const filters: NDKFilter[] = [
@@ -1264,10 +1396,6 @@ export async function fetchAllBikelSocial(rideIds: string[] = [], limit = 50): P
         { kinds: [1301 as any], limit: 60 },
     ];
 
-    // NIP-50 full-text search filters — sent to NIP50_RELAYS via a dedicated NDK pool.
-    // The 'search' field is ignored by relays that don't support NIP-50, so it's safe.
-    // We use separate subscriptions targeting only NIP-50 relays to avoid timeouts on
-    // standard relays that don't understand search.
     const searchTerms = ['bicycle', 'fixie', 'cycling', 'biking', 'bike ride'];
     const searchFilters: NDKFilter[] = searchTerms.map(term => ({
         kinds: [1 as any],
@@ -1285,129 +1413,23 @@ export async function fetchAllBikelSocial(rideIds: string[] = [], limit = 50): P
 
     console.log(`[Nostr] Fetching social activity...`);
 
-    // Run hashtag fetch and NIP-50 search fetch in parallel
-    const [hashtagEvents, searchEvents] = await Promise.all([
-        fetchEventsWithTimeout(ndk, filters, 6000), // Lowered from 10s to 6s
+    // Run fetches in parallel with streaming callbacks
+    await Promise.all([
+        fetchEventsWithTimeout(ndk, filters, 6000, e => handleNewEvent(e)),
         (async () => {
             try {
                 const searchNdk = new NDK({
                     explicitRelayUrls: NIP50_RELAYS,
                     signer: ndk.signer,
                 });
-                await searchNdk.connect(1000); // 1s connect timeout
-                return await fetchEventsWithTimeout(searchNdk, searchFilters, 3500); // 3.5s fetch
+                await searchNdk.connect(1000);
+                return await fetchEventsWithTimeout(searchNdk, searchFilters, 3500, e => handleNewEvent(e, true));
             } catch (e) {
-                console.warn('[Social] NIP-50 search failed (non-fatal):', e);
+                console.warn('[Social] NIP-50 search failed:', e);
                 return new Set<NDKEvent>();
             }
         })(),
     ]);
-
-    // Merge both result sets
-    const allEvents = new Set<NDKEvent>([...hashtagEvents, ...searchEvents]);
-    console.log(`[Nostr] Social: ${hashtagEvents.size} hashtag + ${searchEvents.size} search = ${allEvents.size} total`);
-
-    const uniqueMap = new Map<string, RideComment>();
-    allEvents.forEach(e => {
-        if (uniqueMap.has(e.id)) return;
-
-        const isRide = e.kind === 1301 || e.kind === 33301;
-        const isBikelClient = e.getMatchingTags('client').some(t => t[1] === 'bikel');
-        const hasBikelTag = e.getMatchingTags('t').some(t => ['bikel', 'bikeride', 'fixie', 'biketour', 'cycling', 'bicycle', 'bike', 'mountainbike', 'fixedgear', 'fixedgearbike', 'fixedgearbicycle', 'bikepacking', 'gravel', 'mtb', 'roadbike', 'cyclinglife', 'cyclist', 'velo'].includes(t[1].toLowerCase()));
-
-        // For ride events: only include bikel-tagged to exclude RunSTR walking workouts
-        if (isRide && !hasBikelTag) return;
-
-        const referencedEventId = e.tags.find(t => t[0] === 'e')?.[1] || '';
-        const fromSearch = searchEvents.has(e);
-
-        // For kind-1 posts: need a bikel tag, or an #e ref to a ride, or came from search
-        if (!isRide && !hasBikelTag && !referencedEventId && !fromSearch) return;
-
-        // Skip very short content (spam/bots)
-        if (!isRide && e.content.trim().length < 5) return;
-
-        // For search results: verify content actually contains bike keywords
-        if (fromSearch && !hasBikelTag) {
-            const contentLower = e.content.toLowerCase();
-            const hasBikeWord = ['bicycle', 'fixie', 'cycling', 'bike', 'biking', 'cyclist', 'velodrome', 'peloton'].some(w => contentLower.includes(w));
-            if (!hasBikeWord) return;
-        }
-
-        // Extract rich data from events
-        let displayContent = e.content;
-        let rideTitle = '';
-        let image: string | undefined;
-        let distance: string | undefined;
-        let duration: string | undefined;
-
-        // Extract image from any event type: 'image' tag, 'imeta' tag, or URL in content
-        image = e.getMatchingTags('image')[0]?.[1];
-        if (!image) {
-            const imeta = e.getMatchingTags('imeta')[0];
-            if (imeta) {
-                const urlEntry = imeta.find((t: string) => t.startsWith('url '));
-                if (urlEntry) image = urlEntry.substring(4);
-            }
-        }
-        if (!image) {
-            const urlMatch = e.content.match(
-                /https?:\/\/\S+\.(jpg|jpeg|png|webp|gif)|https?:\/\/(image\.nostr\.build|nostr\.build|void\.cat|i\.imgur|cdn\.satellite\.earth)\S*/i
-            );
-            if (urlMatch) image = urlMatch[0];
-        }
-
-        // For kind-1 posts: strip lines that are only a URL (Mostr/bridge posts put source
-        // URL as first line — remove it so the actual post text shows in the card)
-        if (!isRide) {
-            const cleaned = e.content.split('\n')
-                .filter((line: string) => !/^https?:\/\/\S+$/.test(line.trim()))
-                .join('\n')
-                .trim();
-            displayContent = cleaned.length > 0 ? cleaned : e.content;
-        }
-
-        if (isRide) {
-            rideTitle = e.getMatchingTags('title')[0]?.[1] || '';
-            image = e.getMatchingTags('image')[0]?.[1] || image;
-            distance = e.getMatchingTags('distance')[0]?.[1];
-            const durationRaw = e.getMatchingTags('duration')[0]?.[1];
-            if (durationRaw) {
-                const secs = parseInt(durationRaw, 10);
-                if (!isNaN(secs)) {
-                    const h = Math.floor(secs / 3600);
-                    const m = Math.floor((secs % 3600) / 60);
-                    duration = h > 0 ? `${h}h ${m}m` : `${m}m`;
-                } else {
-                    duration = durationRaw;
-                }
-            }
-            if (!e.content || e.content.startsWith('{')) {
-                displayContent = rideTitle
-                    ? `${rideTitle}`
-                    : distance ? `Rode ${parseFloat(distance).toFixed(1)} miles` : 'Shared a ride 🚲';
-            }
-        }
-
-        uniqueMap.set(e.id, {
-            id: e.id,
-            pubkey: e.pubkey,
-            hexPubkey: e.pubkey,
-            content: displayContent,
-            createdAt: e.created_at || 0,
-            rideId: isRide ? e.id : referencedEventId,
-            title: rideTitle || undefined,
-            isRide,
-            image,
-            distance,
-            duration,
-            kind: e.kind,
-            hasRoute: isRide && (
-                !!e.getMatchingTags('g')[0]?.[1] ||
-                !!e.getMatchingTags('route')[0]?.[1]
-            ),
-        });
-    });
 
     return Array.from(uniqueMap.values()).sort((a, b) => b.createdAt - a.createdAt);
 }
@@ -1433,12 +1455,12 @@ export async function fetchDMs(withPubkey: string): Promise<DMessage[]> {
     const filterReceived: NDKFilter = { kinds: [4], authors: [hexPubkey], "#p": [currentUser.pubkey], limit: 50 };
     const events = await fetchEventsWithTimeout(ndk, [filterSent, filterReceived], 8000);
     const messages: DMessage[] = [];
-    for (const event of events) {
+    await Promise.all(Array.from(events).map(async (event) => {
         try {
-            await event.decrypt(otherUser, ndk.signer, 'nip04');
+            await event.decrypt(otherUser, ndk.signer!, 'nip04');
             messages.push({ id: event.id, sender: event.pubkey, recipient: event.getMatchingTags('p')[0]?.[1] || '', text: event.content, createdAt: event.created_at || Math.floor(Date.now() / 1000) });
         } catch (e) { console.warn(`[Nostr - Mobile] Failed to decrypt DM ${event.id}`, e); }
-    }
+    }));
     return messages.sort((a, b) => a.createdAt - b.createdAt);
 }
 
