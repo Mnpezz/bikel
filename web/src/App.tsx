@@ -1,8 +1,8 @@
 import { useEffect, useState, useMemo, useRef } from 'react';
 import { MapContainer, TileLayer, CircleMarker, Popup, Polyline, useMap, LayerGroup } from 'react-leaflet';
-import { Bike, Activity, CalendarPlus, Calendar, Zap, LogIn, Info, HelpCircle, Smartphone, X, Clock, Route, CheckCircle, RefreshCw, Map as MapIcon, MapPin, ChevronUp, ChevronDown, Users, Database, Download, BarChart2, Trash2, Gauge, ArrowLeft, Trophy, Medal } from 'lucide-react';
+import { Bike, Activity, CalendarPlus, Calendar, Zap, LogIn, Info, HelpCircle, Smartphone, X, Clock, Route, CheckCircle, RefreshCw, Map as MapIcon, MapPin, ChevronUp, ChevronDown, Users, Database, Download, BarChart2, Trash2, Gauge, ArrowLeft, Trophy } from 'lucide-react';
 import { formatDistanceToNow, format, addHours } from 'date-fns';
-import { connectNDK, fetchRecentRides, fetchUserRides, fetchScheduledRides, fetchContests, fetchCheckpoints, loginNip07, publishRSVP, publishContestRSVP, connectNWC, zapRideEvent, fetchComments, publishComment, fetchDMs, sendDM, deleteRide, fetchAllRidesInRange, prepareCheckpointEvent, prepareContestEvent, publishContestEvent, fetchUserRevenue, ESCROW_PUBKEY, fetchApprovedBots, fetchEventsWithTimeout } from './lib/nostr';
+import { connectNDK, fetchRecentRides, fetchUserRides, fetchScheduledRides, fetchContests, fetchCheckpoints, loginNip07, publishRSVP, publishContestRSVP, connectNWC, zapRideEvent, fetchComments, publishComment, fetchDMs, sendDM, deleteRide, fetchAllRidesInRange, prepareCheckpointEvent, prepareContestEvent, fetchUserRevenue, ESCROW_PUBKEY, fetchApprovedBots, fetchEventsWithTimeout } from './lib/nostr';
 import type { RideEvent, ScheduledRideEvent, RideComment, DMessage, ContestEvent, CheckpointEvent, ApprovedBot } from './lib/nostr';
 import type { NDKUser } from '@nostr-dev-kit/ndk';
 import './App.css';
@@ -172,13 +172,11 @@ function App() {
   const [sponsorStartTime, setSponsorStartTime] = useState(format(new Date(), "yyyy-MM-dd'T'HH:mm"));
   const [sponsorDuration, setSponsorDuration] = useState('30');
   const [cpSetName, setCpSetName] = useState('');
-  const [cpRouteIndex, setCpRouteIndex] = useState('0');
   const [setBonus, setSetBonus] = useState('0');
   const [isCampaign, setIsCampaign] = useState(false);
   const [wizardStep, setWizardStep] = useState(1);
   const [wizardPoints, setWizardPoints] = useState<any[]>([]);
   const [pickingMode, setPickingMode] = useState<'simple' | 'wizard' | null>(null);
-  const [isPickingLocation, setIsPickingLocation] = useState(false);
   const resetSponsorWizard = () => {
     setSponsorTitle('');
     setSponsorDescription('');
