@@ -132,7 +132,7 @@
 
 .ride-card:hover {
   background: rgba(255, 255, 255, 0.05);
-  border-color: rgba(0, 255, 170, 0.3);
+  border-color: rgba(255, 255, 255, 0.2);
   transform: translateX(4px);
 }
 
@@ -193,6 +193,69 @@
 .stat-meta-item {
   font-size: 0.75rem;
   color: var(--text-secondary);
+}
+
+/* BEST Feed Items */
+.best-item {
+  border-left: 4px solid var(--accent-primary);
+  background: rgba(0, 255, 170, 0.03) !important;
+}
+
+.best-item.contest {
+  border-left-color: #eab308;
+  background: rgba(234, 179, 8, 0.03) !important;
+}
+
+.best-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 8px;
+}
+
+.badge-reward {
+  background: rgba(0, 255, 170, 0.15);
+  color: #00ffaa;
+}
+
+.badge-fee {
+  background: rgba(234, 179, 8, 0.15);
+  color: #eab308;
+}
+
+.sponsorship-modal {
+  max-width: 500px;
+  width: 90%;
+}
+
+.budget-breakdown {
+  background: rgba(0, 0, 0, 0.4);
+  border-radius: 12px;
+  padding: 20px;
+  margin-top: 20px;
+  border: 1px dashed rgba(255, 255, 255, 0.2);
+}
+
+.breakdown-row {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  font-size: 14px;
+}
+
+.breakdown-total {
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  margin-top: 12px;
+  padding-top: 12px;
+  font-weight: bold;
+  font-size: 16px;
+  color: #00ffaa;
 }
 
 /* Connection status */
@@ -287,8 +350,15 @@
 }
 
 @keyframes fadeIn {
-  from { opacity: 0; transform: translateY(10px); }
-  to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 /* --- Mobile Responsiveness --- */
@@ -381,4 +451,127 @@
   .map-wrapper .leaflet-container {
     padding-bottom: 40vh;
   }
+}
+
+/* Toggle Switch */
+.switch {
+  position: relative;
+  display: inline-block;
+  width: 44px;
+  height: 22px;
+}
+
+.switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.slider {
+  position: absolute;
+  cursor: pointer;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(255, 255, 255, 0.1);
+  transition: .4s;
+}
+
+.slider:before {
+  position: absolute;
+  content: "";
+  height: 16px;
+  width: 16px;
+  left: 3px;
+  bottom: 3px;
+  background-color: #fff;
+  transition: .4s;
+}
+
+input:checked+.slider {
+  background-color: #00ffaa;
+}
+
+input:focus+.slider {
+  box-shadow: 0 0 1px #00ffaa;
+}
+
+input:checked+.slider:before {
+  transform: translateX(22px);
+}
+
+.slider.round {
+  border-radius: 34px;
+}
+
+.slider.round:before {
+  border-radius: 50%;
+}
+
+/* Custom Leaflet Popups */
+.scavenger-summary-popup .leaflet-popup-content-wrapper {
+  background: rgba(35, 40, 50, 0.98) !important;
+  border: 2px solid #ff4d4d !important;
+  color: #fff !important;
+  border-radius: 12px !important;
+  box-shadow: 0 4px 20px rgba(255, 77, 77, 0.4) !important;
+  padding: 0 !important;
+}
+
+.scavenger-summary-popup .leaflet-popup-content {
+  margin: 14px !important;
+}
+
+.scavenger-summary-popup .leaflet-popup-tip {
+  background: #ff4d4d !important;
+}
+
+.poi-summary-popup .leaflet-popup-content-wrapper {
+  background: rgba(35, 40, 50, 0.98) !important;
+  border: 2px solid #a855f7 !important;
+  color: #fff !important;
+  border-radius: 12px !important;
+  box-shadow: 0 4px 20px rgba(168, 85, 247, 0.4) !important;
+  padding: 0 !important;
+}
+
+.poi-summary-popup .leaflet-popup-content {
+  margin: 14px !important;
+}
+
+.poi-summary-popup .leaflet-popup-tip {
+  background: #a855f7 !important;
+}
+
+/* Loading Feedback */
+.loading-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(13, 15, 18, 0.9);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  z-index: 11000;
+  border-radius: 12px;
+  backdrop-filter: blur(8px);
+}
+
+.spinner {
+  width: 50px;
+  height: 50px;
+  border: 4px solid rgba(0, 255, 170, 0.1);
+  border-left-color: #00ffaa;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  margin-bottom: 20px;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }

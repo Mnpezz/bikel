@@ -60,15 +60,22 @@ export const DEFAULT_RELAYS = [
     'wss://relay.bikel.ink',
     'wss://relay.damus.io',
     'wss://relay.primal.net',
+    'wss://nos.lol'
 ];
+
+export const AUTH_METHOD_KEY = 'bikel_auth_method';
+export const AMBER_PUBKEY_KEY = 'bikel_amber_pubkey';
 
 // Relays that support NIP-50 full-text search (search field in REQ filters).
 // These are added to the pool specifically for fetchAllBikelSocial search queries.
 // Regular relays silently ignore the search field, so it's safe to include both.
 export const NIP50_RELAYS = [
-    'wss://relay.nostr.band',   // Best NIP-50 support, large index
-    'wss://relay.nostr.wine',   // Also supports NIP-50
-    'wss://noswhere.com',       // Amethyst default NIP-50 relay
+    'wss://relay.primal.net',
+    'wss://relay.nostr.wine',
+    'wss://noswhere.com',
+    'wss://relay.damus.io',
+    'wss://relay.snort.social',
+    'wss://purplepag.es'
 ];
 
 export const RELAYS_STORAGE_KEY = 'bikel_custom_relays';
@@ -95,8 +102,10 @@ export async function saveRelays(relays: string[]): Promise<void> {
 export const ESCROW_PUBKEY = "cc130b7120d00ded76d065bf0bd27e3a36a38d5268208078a1e99aa29ac44adf";
 
 let globalNdk: NDK | null = null;
-let globalSigner: NDKPrivateKeySigner | null = null;
+let globalSigner: (NDKPrivateKeySigner | AmberSigner) | null = null;
 let globalNdkPromise: Promise<NDK> | null = null;
+
+import { AmberSigner } from './AmberSigner';
 
 // Convert Uint8Array to Hex String
 const bytesToHex = (bytes: Uint8Array) =>
@@ -104,9 +113,19 @@ const bytesToHex = (bytes: Uint8Array) =>
 
 /**
  * Initializes a Nostr Keypair. Loads from SecureStore, or generates a new one.
+ * If the user has opted for Amber, returns an AmberSigner.
  */
-export async function getSigner(): Promise<NDKPrivateKeySigner> {
+export async function getSigner(): Promise<NDKPrivateKeySigner | AmberSigner> {
     if (globalSigner) return globalSigner;
+
+    const authMethod = await SecureStore.getItemAsync(AUTH_METHOD_KEY);
+    
+    if (authMethod === 'amber') {
+        const pubkey = await SecureStore.getItemAsync(AMBER_PUBKEY_KEY);
+        console.log('[Nostr] Initializing AmberSigner with pubkey:', pubkey);
+        globalSigner = new AmberSigner(pubkey || undefined);
+        return globalSigner;
+    }
 
     let hexKey = await SecureStore.getItemAsync(SECURE_STORE_KEY);
 
@@ -119,6 +138,25 @@ export async function getSigner(): Promise<NDKPrivateKeySigner> {
 
     globalSigner = new NDKPrivateKeySigner(hexKey);
     return globalSigner;
+}
+
+/**
+ * Switches the app to use Amber for signing.
+ */
+export async function useAmberSigner(pubkey: string) {
+    await SecureStore.setItemAsync(AUTH_METHOD_KEY, 'amber');
+    await SecureStore.setItemAsync(AMBER_PUBKEY_KEY, pubkey);
+    globalSigner = new AmberSigner(pubkey);
+    globalNdk = null; // Reset NDK to use the new signer
+}
+
+/**
+ * Switches the app to use the local private key for signing.
+ */
+export async function useLocalSigner() {
+    await SecureStore.setItemAsync(AUTH_METHOD_KEY, 'local');
+    globalSigner = null;
+    globalNdk = null; // Reset NDK
 }
 
 /**
@@ -180,7 +218,7 @@ export async function connectNDK(): Promise<NDK> {
  * Fetches events with a timeout, returning whatever was collected if the timeout is reached.
  * Supports an optional onEvent callback for streaming/incremental processing.
  */
-async function fetchEventsWithTimeout(ndk: NDK, filters: NDKFilter[], timeoutMs: number, onEvent?: (ev: NDKEvent) => void): Promise<Set<NDKEvent>> {
+export async function fetchEventsWithTimeout(ndk: NDK, filters: NDKFilter[], timeoutMs: number, onEvent?: (ev: NDKEvent) => void): Promise<Set<NDKEvent>> {
     const merged = new Set<NDKEvent>();
     if (filters.length === 0) return merged;
 
@@ -342,6 +380,7 @@ export async function publishRide(
     image: string = "",
     overrideConfidence?: number,
     elevation?: number,
+    checkpointHitId?: string,
     onLog?: (msg: string) => void
 ) {
     const ndk = await connectNDK();
@@ -371,6 +410,9 @@ export async function publishRide(
         ['t', 'bikeride'],
         ['t', 'fitness']
     ];
+    if (checkpointHitId) {
+        event.tags.push(['checkpoint_hit', checkpointHitId]);
+    }
     if (elevation !== undefined) {
         event.tags.push(['elevation', elevation.toString()]);
         event.tags.push(['elevation_gain', elevation.toString(), 'ft']);
@@ -453,7 +495,7 @@ export async function connectNWC(pairingCode: string): Promise<boolean> {
     const ndk = await connectNDK();
     try {
         // @ts-ignore
-        nwcWallet = new NDKNWCWallet(ndk, { pairingCode });
+        nwcWallet = new NDKNWCWallet(ndk, { pairingCode, timeout: 15000 });
 
         // Hard 5s timeout for NWC — if it fails, we keep the app moving!
         await new Promise<void>((resolve) => {
@@ -486,6 +528,73 @@ export async function zapRideEvent(eventId: string, targetPubkey: string, target
 
     let lastNotice = "";
     try {
+        const targetUser = ndk.getUser({ pubkey: targetPubkey });
+
+        // Ensure profile is fetched before zapper starts so lud16 is known
+        let profile = (targetUser.profile as any) || undefined;
+        if (!profile || (!profile.lud16 && !profile.lud06)) {
+            console.log(`[Zap - Mobile] Fetching profile for recipient ${targetPubkey}...`);
+            // Add a timeout to avoid hanging if relays are slow
+            profile = (await Promise.race([
+                targetUser.fetchProfile(),
+                new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 10000))
+            ]).catch(() => undefined) as any);
+        }
+
+        // Deep discovery fallback if primary relays miss the profile
+        if (!profile || (!profile.lud16 && !profile.lud06)) {
+            console.warn(`[Zap - Mobile] Profile not found on primary relays, trying broader search...`);
+            const discoveryNdk = new NDK({ explicitRelayUrls: NIP50_RELAYS });
+            try {
+                await Promise.race([
+                    discoveryNdk.connect(),
+                    new Promise((_, reject) => setTimeout(() => reject(new Error("Connect Timeout")), 6000))
+                ]);
+                const discoveryUser = discoveryNdk.getUser({ pubkey: targetPubkey });
+                const foundProfile = await Promise.race([
+                    discoveryUser.fetchProfile(),
+                    new Promise((_, reject) => setTimeout(() => reject(new Error("Fetch Timeout")), 10000))
+                ]).catch(() => undefined) as any;
+
+                if (foundProfile && (foundProfile.lud16 || foundProfile.lud06)) {
+                    targetUser.profile = foundProfile;
+                    profile = foundProfile;
+                } else {
+                    // Last ditch: Manual Kind 0 fetch
+                    console.log(`[Zap - Mobile] Manual Kind 0 lookup for ${targetPubkey}...`);
+                    const k0 = await discoveryNdk.fetchEvent({ kinds: [0], authors: [targetPubkey] });
+                    if (k0 && k0.content) {
+                        try {
+                            const data = JSON.parse(k0.content);
+                            if (data.lud16 || data.lud06) {
+                                profile = data;
+                                targetUser.profile = data;
+                                console.log(`[Zap - Mobile] Manual Discovery successful: ${data.lud16 || data.lud06}`);
+                            }
+                        } catch (e) {
+                            console.error("[Zap - Mobile] Failed to parse Kind 0", e);
+                        }
+                    }
+                }
+            } catch (e) {
+                console.warn(`[Zap - Mobile] Deep discovery failed or timed out:`, e);
+            } finally {
+                // NDK Pool disconnect
+                (discoveryNdk.pool as any).disconnect?.();
+            }
+        }
+
+        // Hardcoded fallback for the Bikel Bot (Escrow Account) if discovery fails
+        if ((!profile || (!profile.lud16 && !profile.lud06)) && targetPubkey === ESCROW_PUBKEY) {
+            console.log(`[Zap - Mobile] Using hardcoded fallback for Bikel Bot: bikel@coinos.io`);
+            profile = { ...profile, lud16: 'bikel@coinos.io' };
+            targetUser.profile = profile;
+        }
+
+        if (!profile || (!(profile as any).lud16 && !(profile as any).lud06)) {
+            throw new Error("This bot or user hasn't set up a Lightning Address in their profile yet, so it cannot be zapped!");
+        }
+
         const event = new NDKEvent(ndk);
         event.id = eventId;
         event.pubkey = targetPubkey;
@@ -498,19 +607,93 @@ export async function zapRideEvent(eventId: string, targetPubkey: string, target
         }
 
         console.log(`[Zap - Mobile] Requesting ${amountSats} sat zap for event ${eventId}...`);
+
+        console.log("[Zap - Mobile] Calling zapper.zap()...");
+
+        let resolveLnPay: (v: boolean) => void;
+        const lnPaySignal = new Promise<boolean>(r => { resolveLnPay = r; });
+
+        let lnPayInitiated = false;
+        const originalLnPay = currentWallet.lnPay?.bind(currentWallet);
+        const wrappedLnPay = async (payment: any) => {
+            const invoice = typeof payment === 'string' ? payment : (payment.pr || payment.invoice || JSON.stringify(payment));
+            console.log("[Zap - Mobile] lnPay (Wallet) called with invoice/payment:", invoice.substring(0, 50) + "...");
+            lnPayInitiated = true;
+            try {
+                if (originalLnPay) {
+                    const res = await originalLnPay(payment);
+                    console.log("[Zap - Mobile] lnPay (Wallet) returned:", res);
+                    if (res) {
+                        console.log("[Zap - Mobile] lnPay confirmed success, signaling early return...");
+                        resolveLnPay(true);
+                    }
+                    return res;
+                }
+                console.warn("[Zap - Mobile] No originalLnPay found!");
+                return undefined;
+            } catch (err) {
+                console.error("[Zap - Mobile] lnPay (Wallet) CRASHED:", err);
+                throw err;
+            }
+        };
+
         const zapper = new NDKZapper(event, amountSats * 1000, 'msat', {
             comment,
             ndk,
-            lnPay: currentWallet.lnPay ? currentWallet.lnPay.bind(currentWallet) : undefined
+            lnPay: wrappedLnPay
         });
         zapper.on("notice", (msg) => { console.log("[Zap Notice]", msg); lastNotice = msg; });
-        zapper.zap().catch(e => console.warn(`[Zap - Mobile] Background Zap Promise Rejection (Ignored):`, e));
-        console.log(`[Zap - Mobile] Payment dispatched. Returning Pseudo-Success.`);
-        return true;
+
+        // Race between:
+        // 1. Zapper's full confirmation (including receipt wait)
+        // 2. Our early signal from lnPay success
+        // 3. A 20-second timeout
+        const success = await Promise.race([
+            zapper.zap().then(c => {
+                console.log("[Zap - Mobile] zapper.zap() resolved:", !!c);
+                return !!c;
+            }).catch(e => {
+                console.warn("[Zap - Mobile] zapper.zap() promise rejected:", e);
+                // IF we initiated lnPay and it timed out or failed with "All zap attempts failed"
+                // AND we are zapping the Bikel Bot, we assume it worked (optimistic success)
+                if (lnPayInitiated && (targetPubkey === ESCROW_PUBKEY)) {
+                    console.log("[Zap - Mobile] lnPay was initiated for Bikel Bot. Assuming optimistic success.");
+                    return true;
+                }
+                return false;
+            }),
+            lnPaySignal,
+            new Promise<boolean>(r => setTimeout(() => {
+                console.warn("[Zap - Mobile] Zapper wait timed out after 20s");
+                // If we initiated payment to our bot, we're optimistic!
+                if (lnPayInitiated && (targetPubkey === ESCROW_PUBKEY)) {
+                    console.log("[Zap - Mobile] Timeout but lnPay was initiated for Bikel Bot. Returning true.");
+                    r(true);
+                } else {
+                    r(false);
+                }
+            }, 20000))
+        ]);
+
+        if (success) {
+            console.log(`[Zap - Mobile] Zap process declared SUCCESS!`);
+            return true;
+        } else {
+            console.warn(`[Zap - Mobile] Zap process failed or timed out.`);
+            // If it timed out but we called lnPay, it might have actually worked (like the user saw on Coinos)
+            return false;
+        }
     } catch (e: any) {
         console.error("[Zap - Mobile] Failed to zap event", e);
         if (lastNotice) throw new Error(`Lightning node error: ${lastNotice}`);
-        else if (e.message?.includes("All zap attempts failed")) throw new Error("This rider has not linked a Lightning Address to their Nostr profile!");
+
+        const isTimeout = e.message?.toLowerCase().includes("timeout") || e.message?.toLowerCase().includes("timed out");
+        if (isTimeout) {
+            // Special case: if it worked but timed out waiting for response
+            throw new Error("Zap request sent but confirmation timed out. Check your wallet balance—it may have already been sent!");
+        }
+
+        if (e.message?.includes("All zap attempts failed")) throw new Error("This recipient has not linked a Lightning Address to their Nostr profile!");
         else throw e;
     }
 }
@@ -532,6 +715,7 @@ export interface RideEvent {
     confidence?: number;
     elevation?: string;
     client?: string;
+    checkpointHitId?: string | null;
 }
 
 /**
@@ -539,6 +723,8 @@ export interface RideEvent {
  * Supports legacy JSON-in-content and new Bikel JSON-in-tag 'g'.
  */
 function parseRideEvent(event: NDKEvent): RideEvent | null {
+    // Skip Kind 1 replies
+    if (event.kind === 1 && event.getMatchingTags("e").length > 0) return null;
     try {
         const distanceTag = event.getMatchingTags("distance")[0];
         const distanceVal = parseFloat(distanceTag?.[1] || "0");
@@ -632,6 +818,8 @@ function parseRideEvent(event: NDKEvent): RideEvent | null {
             }
         }
 
+        const checkpointHitId = event.getMatchingTags("checkpoint_hit")[0]?.[1] || null;
+
         return {
             id: event.id,
             pubkey: event.author.npub,
@@ -652,10 +840,11 @@ function parseRideEvent(event: NDKEvent): RideEvent | null {
             image,
             confidence,
             elevation,
-            client
+            client,
+            checkpointHitId
         };
     } catch (e) {
-        console.warn("Failed to parse event", event.id, e);
+        console.error('[Nostr] Failed to parse ride event:', e);
         return null;
     }
 }
@@ -736,6 +925,7 @@ export async function getPrivateKeyHex(): Promise<string | null> {
 }
 
 export async function getPrivateKeyNsec(): Promise<string | null> {
+    if (await SecureStore.getItemAsync(AUTH_METHOD_KEY) === 'amber') return null;
     const hex = await getPrivateKeyHex();
     if (!hex) return null;
     const bytes = new Uint8Array(hex.match(/.{1,2}/g)!.map(byte => parseInt(byte, 16)));
@@ -743,6 +933,13 @@ export async function getPrivateKeyNsec(): Promise<string | null> {
 }
 
 export async function getPublicKeyNpub(): Promise<string | null> {
+    const authMethod = await SecureStore.getItemAsync(AUTH_METHOD_KEY);
+    if (authMethod === 'amber') {
+        let hex = await SecureStore.getItemAsync(AMBER_PUBKEY_KEY);
+        if (!hex) return null;
+        if (hex.startsWith('npub1')) return hex;
+        return nip19.npubEncode(hex);
+    }
     const hex = await getPrivateKeyHex();
     if (!hex) return null;
     const bytes = new Uint8Array(hex.match(/.{1,2}/g)!.map(byte => parseInt(byte, 16)));
@@ -750,6 +947,14 @@ export async function getPublicKeyNpub(): Promise<string | null> {
 }
 
 export async function getPublicKeyHex(): Promise<string | null> {
+    const authMethod = await SecureStore.getItemAsync(AUTH_METHOD_KEY);
+    if (authMethod === 'amber') {
+        let hex = await SecureStore.getItemAsync(AMBER_PUBKEY_KEY);
+        if (hex?.startsWith('npub1')) {
+            try { const { data } = nip19.decode(hex); hex = data as string; } catch (e) {}
+        }
+        return hex;
+    }
     const hex = await getPrivateKeyHex();
     if (!hex) return null;
     const bytes = new Uint8Array(hex.match(/.{1,2}/g)!.map(byte => parseInt(byte, 16)));
@@ -811,6 +1016,28 @@ export interface ContestEvent {
     kind: 33401; // ← updated from 31924
 }
 
+export interface CheckpointEvent {
+    id: string;
+    pubkey: string;
+    hexPubkey: string;
+    dTag: string;
+    title: string;
+    description: string;
+    location: { lat: number, lng: number };
+    rewardSats: number;
+    radius: number;
+    startTime: number;
+    endTime: number;
+    frequency?: 'once' | 'daily' | 'hourly';
+    kind: 33402;
+    event: NDKEvent;
+    streakDays?: number;
+    set?: string;
+    setReward?: number;
+    routeId?: string;
+    routeIndex?: number;
+}
+
 export async function fetchRecentRides(onUpdate?: (rides: RideEvent[]) => void): Promise<RideEvent[]> {
     const ndk = await connectNDK();
     const filters: NDKFilter[] = [
@@ -818,7 +1045,7 @@ export async function fetchRecentRides(onUpdate?: (rides: RideEvent[]) => void):
         { kinds: [1 as any], '#t': ['bikel'], limit: 50 },
         { kinds: [1 as any], '#t': ['cycling'], limit: 50 },
     ];
-    
+
     const ridesMap = new Map<string, RideEvent>();
     let lastEmitTime = 0;
     const throttleInterval = 200; // ms
@@ -839,10 +1066,10 @@ export async function fetchRecentRides(onUpdate?: (rides: RideEvent[]) => void):
 
         const dTag = event.getMatchingTags("d")[0]?.[1] || "";
         const key = dTag ? `${event.pubkey}-${dTag}` : event.id;
-        
+
         if (!ridesMap.has(key) || parsed.kind === 33301) {
             ridesMap.set(key, parsed);
-            
+
             const now = Date.now();
             if (onUpdate && (now - lastEmitTime > throttleInterval || ridesMap.size === 1)) {
                 lastEmitTime = now;
@@ -851,9 +1078,9 @@ export async function fetchRecentRides(onUpdate?: (rides: RideEvent[]) => void):
             }
         }
     };
-    
+
     console.log("[Nostr] Fetching recent Bikel & Runstr rides...");
-    
+
     // Use a longer 15s window for comprehensive discovery, but the UI will be snappy thanks to onUpdate.
     await fetchEventsWithTimeout(ndk, filters, 15000, handleEvent);
     return Array.from(ridesMap.values()).sort((a, b) => b.time - a.time);
@@ -912,18 +1139,38 @@ export async function fetchScheduledRides(): Promise<ScheduledRideEvent[]> {
     return scheduledRides.sort((a, b) => a.startTime - b.startTime);
 }
 
-export async function publishRSVP(eventObj: ScheduledRideEvent | ContestEvent): Promise<boolean> {
+export async function publishRSVP(target: ScheduledRideEvent | ContestEvent | string, botPubkey?: string): Promise<boolean> {
     const ndk = await connectNDK();
     if (!ndk.signer) return false;
     const event = new NDKEvent(ndk);
     event.kind = 31925;
-    event.tags = [
-        ['a', `${eventObj.kind}:${eventObj.hexPubkey}:${eventObj.dTag}`],
-        ['l', 'accepted'],
-        ['client', 'bikel']
-    ];
+
+    if (typeof target === 'string') {
+        event.tags = [
+            ['a', target],
+            ['p', botPubkey || ESCROW_PUBKEY],
+            ['l', 'accepted'],
+            ['client', 'bikel'],
+            ['t', 'bikel-rsvp']
+        ];
+    } else {
+        event.tags = [
+            ['a', `${target.kind}:${target.hexPubkey}:${target.dTag}`],
+            ['p', target.hexPubkey],
+            ['l', 'accepted'],
+            ['client', 'bikel'],
+            ['t', 'bikel-rsvp']
+        ];
+    }
+
     event.content = "";
-    try { await event.publish(); return true; } catch { return false; }
+    try {
+        await event.publish();
+        return true;
+    } catch (e) {
+        console.error("[Nostr] Failed to publish RSVP:", e);
+        return false;
+    }
 }
 
 export async function publishScheduledRide(
@@ -989,12 +1236,12 @@ export async function deleteRideEvent(ride: ScheduledRideEvent): Promise<boolean
  * all embedded in the event so any compatible bot can process it without
  * reading Bikel source code.
  */
-export async function publishContestEvent(
+export async function prepareContestEvent(
     name: string,
     description: string,
     startTimestamp: number,
     endTimestamp: number,
-    parameter: string,   // "max_distance" | "max_elevation" | "fastest_mile"
+    parameter: string,
     feeSats: number,
     invitedPubkeys: string[],
     sport: string = "cycling",
@@ -1002,12 +1249,10 @@ export async function publishContestEvent(
     payoutSplit: [number, number, number] = [50, 30, 20],
     minConfidence: number = 0.7,
     prizeSats?: number
-): Promise<string> {
+): Promise<NDKEvent> {
     const ndk = await connectNDK();
     const event = new NDKEvent(ndk);
-
-    event.kind = 33401; // ← Bikel custom challenge kind
-
+    event.kind = 33401;
     const dTag = `bikel-challenge-${Date.now()}`;
 
     event.tags = [
@@ -1036,12 +1281,30 @@ export async function publishContestEvent(
     }
 
     event.content = description;
+    await event.sign();
+    return event;
+}
 
+export async function publishContestEvent(
+    name: string,
+    description: string,
+    startTimestamp: number,
+    endTimestamp: number,
+    parameter: string,
+    feeSats: number,
+    invitedPubkeys: string[],
+    sport: string = "cycling",
+    unit: string = "imperial",
+    payoutSplit: [number, number, number] = [50, 30, 20],
+    minConfidence: number = 0.7,
+    prizeSats?: number
+): Promise<string> {
+    const event = await prepareContestEvent(name, description, startTimestamp, endTimestamp, parameter, feeSats, invitedPubkeys, sport, unit, payoutSplit, minConfidence, prizeSats);
     console.log('[Nostr] Publishing challenge event (Kind 33401)...');
     await event.publish();
-    console.log(`[Nostr] Challenge published! ID: ${event.id}`);
     return event.id;
 }
+
 
 export async function fetchContests(): Promise<ContestEvent[]> {
     const ndk = await connectNDK();
@@ -1107,11 +1370,154 @@ export async function fetchContests(): Promise<ContestEvent[]> {
     return contests.sort((a, b) => b.createdAt - a.createdAt);
 }
 
+export async function fetchCheckpoints(): Promise<CheckpointEvent[]> {
+    const ndk = await connectNDK();
+    const filters: NDKFilter[] = [{ kinds: [33402 as any], "#t": ["bikel"], limit: 500 }];
+    console.log("[Nostr] Fetching Bikel Checkpoints (Kind 33402)...");
+    const events = await fetchEventsWithTimeout(ndk, filters, 5000);
+
+    const checkpoints: CheckpointEvent[] = [];
+    const now = Math.floor(Date.now() / 1000);
+
+    for (const event of events) {
+        try {
+            const dTag = event.getMatchingTags("d")[0]?.[1];
+            if (!dTag) continue;
+
+            const title = event.getMatchingTags("title")[0]?.[1] || "POI Checkpoint";
+            const locTag = event.getMatchingTags("location")[0]?.[1] || "";
+            const [lat, lng] = locTag.split(',').map(Number);
+            const rewardSats = parseInt(event.getMatchingTags("reward")[0]?.[1] || "0", 10);
+            const radius = parseInt(event.getMatchingTags("radius")[0]?.[1] || "20", 10);
+            const startTime = parseInt(event.getMatchingTags("start")[0]?.[1] || "0", 10);
+            const endTime = parseInt(event.getMatchingTags("end")[0]?.[1] || "0", 10);
+
+            const frequency = event.getMatchingTags("frequency")[0]?.[1] as 'once' | 'daily' | 'hourly' | undefined;
+            const streakDays = parseInt(event.getMatchingTags("streak_days")[0]?.[1] || "0", 10);
+            const set = event.getMatchingTags("set")[0]?.[1];
+            const setReward = parseInt(event.getMatchingTags("set_reward")[0]?.[1] || "0", 10);
+            const routeId = event.getMatchingTags("route_id")[0]?.[1];
+            let routeIndex = parseInt(event.getMatchingTags("route_index")[0]?.[1] || "-1", 10);
+            if (routeIndex === -1) {
+                routeIndex = parseInt(event.getMatchingTags("n")[0]?.[1] || "-1", 10);
+            }
+
+            if (isNaN(lat) || isNaN(lng)) continue;
+
+            // Filter for active or upcoming (don't show expired)
+            // Fix: Include permanent POIs (endTime === 0)
+            if (endTime === 0 || endTime > now - 86400) {
+                checkpoints.push({
+                    id: event.id,
+                    pubkey: event.author.npub,
+                    hexPubkey: event.pubkey,
+                    dTag,
+                    title,
+                    description: event.content || "",
+                    location: { lat, lng },
+                    rewardSats,
+                    radius,
+                    startTime,
+                    endTime,
+                    frequency,
+                    kind: 33402,
+                    event: event,
+                    streakDays: streakDays || undefined,
+                    set,
+                    setReward: setReward || undefined,
+                    routeId,
+                    routeIndex: routeIndex !== -1 ? routeIndex : undefined
+                });
+            }
+        } catch (e) { }
+    }
+
+    return checkpoints;
+}
+
+export async function prepareCheckpointEvent(
+    title: string,
+    description: string,
+    lat: number,
+    lng: number,
+    rewardSats: number,
+    radius: number,
+    startTime: number,
+    endTime: number,
+    botPubkey?: string,
+    frequency?: 'once' | 'daily' | 'hourly',
+    limit?: number,
+    rsvp?: 'required' | 'optional',
+    streakReward?: number,
+    setReward?: number,
+    set?: string,
+    route_id?: string,
+    route_index?: number,
+    streakDays?: number
+): Promise<NDKEvent> {
+    const ndk = await connectNDK();
+    const event = new NDKEvent(ndk);
+    event.kind = 33402 as any;
+    event.content = description;
+
+    // Use a random d-tag or slug of title
+    const dTag = title.toLowerCase().replace(/[^a-z0-9]/g, '-') + '-' + Math.floor(Math.random() * 1000000);
+
+    event.tags = [
+        ['d', dTag],
+        ['title', title],
+        ['location', `${lat},${lng}`],
+        ['reward', rewardSats.toString()],
+        ['radius', radius.toString()],
+        ['start', startTime.toString()],
+        ['end', endTime.toString()],
+        ['t', 'bikel'],
+        ['t', 'checkpoint']
+    ];
+
+    if (botPubkey) event.tags.push(['bot', botPubkey]);
+    if (frequency) event.tags.push(['frequency', frequency]);
+    if (limit) event.tags.push(['limit', limit.toString()]);
+    if (rsvp) event.tags.push(['rsvp', rsvp]);
+    if (streakReward) event.tags.push(['streak_reward', streakReward.toString()]);
+    if (setReward) event.tags.push(['set_reward', setReward.toString()]);
+    if (set) event.tags.push(['set', set]);
+    if (route_id) event.tags.push(['route_id', route_id]);
+    if (route_index !== undefined && route_index !== -1) event.tags.push(['route_index', route_index.toString()]);
+    if (streakDays) event.tags.push(['streak_days', streakDays.toString()]);
+
+    await event.sign();
+    return event;
+}
+
+export async function publishCheckpoint(
+    title: string,
+    description: string,
+    lat: number,
+    lng: number,
+    rewardSats: number,
+    radius: number,
+    startTime: number,
+    endTime: number,
+    botPubkey?: string,
+    frequency?: 'once' | 'daily' | 'hourly',
+    limit?: number
+): Promise<string | null> {
+    const event = await prepareCheckpointEvent(title, description, lat, lng, rewardSats, radius, startTime, endTime, botPubkey, frequency, limit);
+    try {
+        await event.publish();
+        return event.id;
+    } catch (e) {
+        console.error("[Nostr] Failed to publish checkpoint:", e);
+        return null;
+    }
+}
+
 export async function fetchRideLeaderboard(attendees: string[], startTime: number, endTime: number, parameter: string): Promise<{ pubkey: string, value: number }[]> {
     if (attendees.length === 0) return [];
     const ndk = await connectNDK();
     const filters: NDKFilter[] = [{
-        kinds: [33301 as any],
+        kinds: [1301 as any, 33301 as any],
         authors: attendees.map(a => a.startsWith("npub") ? new NDKUser({ npub: a }).pubkey : a),
         since: startTime,
         until: endTime
@@ -1126,10 +1532,21 @@ export async function fetchRideLeaderboard(attendees: string[], startTime: numbe
             const durationTag = event.getMatchingTags("duration")[0]?.[1];
             if (!distanceTag || !durationTag) continue;
             const distance = parseFloat(distanceTag);
-            const duration = parseInt(durationTag, 10);
+            const elevationGain = parseFloat(event.getMatchingTags("elevation_gain")[0]?.[1] || "0");
+            let duration = 0;
+            if (durationTag.includes(':')) {
+                const parts = durationTag.split(':').reverse();
+                duration = parseInt(parts[0] || "0", 10) + (parseInt(parts[1] || "0", 10) * 60) + (parseInt(parts[2] || "0", 10) * 3600);
+            } else {
+                duration = parseInt(durationTag, 10);
+            }
+            if (duration === 0) continue;
+
             const pubkey = event.pubkey;
-            if (parameter === "max_distance" || parameter === "max_elevation") {
+            if (parameter === "max_distance") {
                 scores[pubkey] = (scores[pubkey] || 0) + distance;
+            } else if (parameter === "max_elevation") {
+                scores[pubkey] = (scores[pubkey] || 0) + elevationGain;
             } else if (parameter === "fastest_mile") {
                 if (distance >= 1) {
                     const pace = distance / (duration / 3600);
@@ -1638,4 +2055,116 @@ export async function uploadPhoto(uri: string): Promise<string> {
         : 'All Blossom servers failed even with Fetch upload. Check your connection.';
 
     throw new Error(finalError);
+}
+
+export interface ApprovedBot {
+    name: string;
+    pubkey: string;
+    description?: string;
+    image?: string;
+    feePct?: number;
+}
+
+/**
+ * Fetches the list of approved sponsorship bots from bikel.ink
+ */
+export async function fetchApprovedBots(): Promise<ApprovedBot[]> {
+    try {
+        console.log('[Nostr] Discovering Bikel bots via Kind 33400...');
+        const ndk = await connectNDK();
+
+        // Query for bot announcements with a short 5s timeout
+        const events = await fetchEventsWithTimeout(ndk, [{
+            kinds: [33400 as any],
+            '#t': ['bikel-bot']
+        }], 5000);
+
+        if (!events || events.size === 0) {
+            console.warn('[Nostr] No bots found on relays.');
+            return [];
+        }
+
+        const botsMap = new Map<string, ApprovedBot>();
+
+        // Sort by created_at desc to get the latest announcement for each bot
+        const sorted = Array.from(events).sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+
+        const currentTime = Math.floor(Date.now() / 1000);
+        for (const event of sorted) {
+            if (botsMap.has(event.pubkey)) continue;
+
+            const expiration = parseInt(event.getMatchingTags('expiration')[0]?.[1] || '0', 10);
+            if (expiration > 0 && expiration < currentTime) continue; // Skip expired announcements
+
+            const name = event.getMatchingTags('name')[0]?.[1] || "Unnamed Bot";
+            const description = event.getMatchingTags('description')[0]?.[1] || event.content || "";
+            const image = event.getMatchingTags('image')[0]?.[1] || "";
+            const feePct = parseFloat(event.getMatchingTags('fee')[0]?.[1] || '5');
+
+            botsMap.set(event.pubkey, {
+                name,
+                pubkey: event.pubkey,
+                description,
+                image,
+                feePct
+            });
+        }
+
+        const found = Array.from(botsMap.values());
+        console.log(`[Nostr] Discovered ${found.length} bot(s) on network.`);
+        return found;
+    } catch (e) {
+        console.error('[Nostr] Failed decentralized bot discovery:', e);
+        return [];
+    }
+}
+
+export interface Claim {
+    checkpointId: string;
+    rideId?: string;
+    timestamp: number;
+}
+
+/**
+ * Fetches all reward "claims" (Kind 1 notes with t=bikel_bonus) associated with the current user.
+ * This allows the UI to show progress even if the user's ride events don't have checkpoint tags.
+ */
+export async function fetchMyClaims(): Promise<Claim[]> {
+    try {
+        const ndk = await connectNDK();
+        const signer = await getSigner();
+        const user = await signer.user();
+
+        console.log(`[Nostr] Fetching claims for ${user.pubkey.substring(0, 8)}...`);
+
+        const filter: NDKFilter = {
+            kinds: [1],
+            '#p': [user.pubkey],
+            '#t': ['bikel_bonus']
+        };
+
+        const events = await fetchEventsWithTimeout(ndk, [filter], 8000);
+        const claims: Claim[] = [];
+
+        for (const event of events) {
+            const cpId = event.getMatchingTags('e').find(t => t[3] === 'mention')?.[1] ||
+                event.getMatchingTags('e')[0]?.[1];
+
+            const rideId = event.getMatchingTags('e').find(t => t[3] === 'context')?.[1];
+
+            if (cpId) {
+                claims.push({
+                    checkpointId: cpId,
+                    rideId,
+                    timestamp: event.created_at || 0
+                });
+            }
+        }
+
+        console.log(`[Nostr] Found ${claims.length} claim(s).`);
+        return claims;
+    } catch (e) {
+        console.error('[Nostr] Failed to fetch claims:', e);
+        return [];
+    }
 }

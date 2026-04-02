@@ -16,13 +16,18 @@ rl.on('line', (line) => {
       let accept = false;
       let msg = "blocked: This relay exclusively accepts Bikel and Runstr Open Cycling Data.";
 
-      // 1301 = NIP Fitness Activity (The new standard)
+      // 0 = Metadata (Profile)
+      // 5 = Deletion
+      // 10002 = Relay List (NIP-65)
       // 33301 = Legacy Bikel (For historic backfill)
-      // 33401 = Bikel Challenges / Contests
+      // 1301 = NIP Fitness Activity (The new standard)
       // 31923 = Bikel Group Rides
-      if (ev.kind === 33301 || ev.kind === 1301 || ev.kind === 31923 || ev.kind === 33401) {
+      // 33401 = Bikel Challenges / Contests
+      // 33400 = Bikel Bot Announcement
+      const bikelKinds = [0, 5, 10002, 33301, 1301, 31923, 33401, 33400];
+      if (bikelKinds.includes(ev.kind)) {
         accept = true;
-      } 
+      }
       // 1 = Public text notes (Accept ONLY if tagged with relevant fitness clients)
       else if (ev.kind === 1) {
         const tTags = (ev.tags || []).filter(t => t[0] === 't').map(t => (t[1] || '').toLowerCase());

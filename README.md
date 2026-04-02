@@ -52,19 +52,53 @@ cd apk
 *This script automates the Expo prebuild, Gradle compilation, and APK sideloading.*
 
 ---
+---
 ## 🗺️ Nostr Event Kinds
-| Kind | Purpose |
-|------|---------|
-| `1301` | **Primary**: Fitness Activity (NIP-1301) |
-| `33301` | Legacy Bikel Ride events (Supported for backfill) |
-| `31923` | Scheduled group rides (NIP-52) |
-| `31925` | RSVPs for scheduled rides |
-| `33401` | Challenge events (Custom Bikel kind) |
-| `5` | Deletion requests |
-| `4` | Encrypted DMs |
-| `1` | Ride comments / Discussion |
+| Kind | Role | Description |
+|------|------|-------------|
+| `1301` | **Primary** | Standard Fitness Activity (NIP-1301) |
+| `33301` | Legacy | Historical Bikel Ride events (Supported for backfill) |
+| `33400` | **Bot** | Bot Announcement: Decentralized discovery, fee rates & relay lists |
+| `33401` | **Hunt** | Scavenger Hunt / Challenge: Parent container for POI sets |
+| `33402` | **Point** | Checkpoint: Sponsored POI with distance-based rewards |
+| `31925` | RSVP | RSVP: Join events/campaigns to track participation |
+| `6`     | Feed | Reposts / Boosts |
+| `5`     | Admin | Deletion requests |
+| `1`     | Social | Ride comments / Shout-outs |
 
 ---
+
+## 🎮 Bikel Game Layer
+Bikel has evolved from a simple tracker into a decentralized "Live Game." Sponsors can create **Scavenger Hunts** and **Sponsored POIs** that reward physical exertion with automated Bitcoin payouts.
+
+### ⚡ Mechanics
+- **📍 Sponsored POIs (Kind 33402)**: Individual points on the map. Entering the 50-meter radius triggers an instant sat payout. Verified with **high-precision coordinate matching** (6 decimal places) to ensure reliability.
+- **🧩 Scavenger Hunts (Kind 33401)**: Parent containers that group multiple POIs into a "Set."
+- **💰 Completion Bonuses**: Completing a full set (hitting every point in a Kind 33401 hunt) triggers a massive "Set Reward" bonus.
+- **🔄 Retroactive Evaluation**: The Bikel Bot uses a "Virtual Hit List" to recognize set completions even if you already received individual checkpoint rewards on previous runs.
+
+### 🧭 Advanced Incentives
+- **Daily Streaks**: Multipliers for visiting a specific POI multiple days in a row (configured via `streak_days` for duration and `streak_reward` for bonus sat amount).
+- **Ordered Routing**: Bonuses for following specific paths in order (`route_id` → `route_index`).
+- **Activity Window**: Expired events remain visible in the feed and on the map for a **7-day grace period** to ensure recent campaign activity is discoverable.
+
+### 🪙 Platform Economics
+The ecosystem is self-sustaining through a markup model where sponsors fund prize pools:
+- **Sponsors**: Pay a small platform fee (default 5%) to maintain the bot infrastructure.
+- **Riders**: Get 100% of the promised reward via Lightning Network.
+
+---
+
+## 🛠️ Infrastructure & Persistence
+For developers running their own Bikel Bot:
+- **Persistence**: Individual payouts are tracked in `checkpoint_payouts.json`, while completion bonuses are stored in `set_payouts.json`.
+- **Coordinate Standard**: The bot synchronizes with the mobile app using NIP-33 `d-tag` coordinates (`lat,lng`) for robust event linking.
+- **Relay Backbone**: High-frequency updates are managed by a dedicated `strfry` relay to ensure split-second hit detection.
+<truncated 501 bytes>
+
+
+---
+
 ## 📐 Kind 1301 — Fitness Activity (Primary Standard)
 Bikel has adopted **NIP-1301** as its primary data standard. This ensures compatibility with the broader Nostr fitness ecosystem while maintaining the high-resolution geometry Bikel is known for.
 

@@ -151,7 +151,7 @@ async function run() {
     // Your rides — full tag dump for debugging challenge eligibility
     const MY_PUBKEY = '9367a951f3e58803ab88d3053a1b7b1be4539addcec555b61cfa19c5f2397e83';
     console.log("\n--- Your Recent Rides (full tags) ---");
-    const myRides = await fetchWithTimeout({ kinds: [33301], authors: [MY_PUBKEY], limit: 10 }, 10000);
+    const myRides = await fetchWithTimeout({ kinds: [33301], authors: [MY_PUBKEY], limit: 50 }, 10000);
     console.log(`Found ${myRides.size} ride(s):`);
     for (const e of myRides) {
         const distance = e.getMatchingTags('distance')[0]?.[1] ?? '(missing)';
