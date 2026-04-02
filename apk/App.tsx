@@ -571,6 +571,8 @@ export default function App() {
   const [dmMessages, setDmMessages] = useState<DMessage[]>([]);
   const [newDMText, setNewDMText] = useState('');
   const [isSendingDM, setIsSendingDM] = useState(false);
+  const [isPostingOverlay, setIsPostingOverlay] = useState(false);
+  const [postingMessage, setPostingMessage] = useState('Posting to Nostr...');
   const [backToSocialHub, setBackToSocialHub] = useState(false);
   const [discussionFromSocial, setDiscussionFromSocial] = useState(false);
   const socialScrollRef = useRef<any>(null);
@@ -1410,6 +1412,7 @@ export default function App() {
   }, [showSocialOverlay, socialTab]);
 
   // Activity feed is now pre-loaded in loadFeeds() — no separate trigger needed
+  const delay = (ms: number) => new Promise(res => setTimeout(res, ms));
 
   // ── Manual tracking toggle ─────────────────────────
   const toggleTracking = async () => {
@@ -1500,24 +1503,31 @@ export default function App() {
         }
 
         try {
-          const alreadyRunning = await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK);
-          if (alreadyRunning) await Location.stopLocationUpdatesAsync(LOCATION_TASK);
-          // Pause draft task while manual tracking is active
-          const draftRunning = await Location.hasStartedLocationUpdatesAsync(DRAFT_TASK);
-          if (draftRunning) {
-            await Location.stopLocationUpdatesAsync(DRAFT_TASK);
-            // Note: DRAFT_TASK will be re-started when manual tracking ends (if auto-detect is on)
+          // 1. Force stop ANY existing Bikel location tasks to avoid native collisions
+          const tasks = [LOCATION_TASK, DRAFT_TASK, PASSIVE_SCAN_TASK];
+          for (const t of tasks) {
+            try {
+              const isStarted = await Location.hasStartedLocationUpdatesAsync(t);
+              if (isStarted) {
+                await Location.stopLocationUpdatesAsync(t);
+                console.log(`[Tracking] Force-stopped task: ${t}`);
+              }
+            } catch (e) { }
           }
+
+          // 2. Critical delay to let native Android service release the resource
+          await delay(600);
         } catch (e) { }
 
+        await logEvent(`🛰️ [Tracking] Initializing native location service...`);
         await Location.startLocationUpdatesAsync(LOCATION_TASK, {
           accuracy: Location.Accuracy.High,
-          distanceInterval: 5,
-          timeInterval: 3000,
+          distanceInterval: 1, // High resolution for manual recording
+          timeInterval: 2000,
           showsBackgroundLocationIndicator: true,
           foregroundService: {
             notificationTitle: '🚴 Bikel is tracking your ride',
-            notificationBody: 'Tap to return to the app',
+            notificationBody: 'Distance and time are being recorded.',
             notificationColor: '#00ffaa',
           },
           pausesUpdatesAutomatically: false,
@@ -4032,6 +4042,8 @@ export default function App() {
 
                     try {
                       if (schedType === 'ride') {
+                        setPostingMessage("Scheduling Ride...");
+                        setIsPostingOverlay(true);
                         let startUnix = Math.floor(schedDate.getTime() / 1000);
                         let eventsToCreate = schedCadence === 'none' ? 1 : schedOccurrences;
                         for (let i = 0; i < eventsToCreate; i++) {
@@ -4045,46 +4057,45 @@ export default function App() {
                         Alert.alert("Success", "Published to Nostr!");
                       } else if (schedType === 'sponsor') {
                         if (!schedName || (!isWizard && !sponsorLocation)) { Alert.alert("Missing Fields", "Please provide a name and select a location."); return; }
+                        
+                        const rewardInt = parseInt(sponsorReward || '0', 10);
+                        const limitInt = parseInt(sponsorLimit || '1', 10);
+                        const sR = sponsorStreak ? parseInt(streakReward || '0', 10) : 0;
+                        const sB = isWizard ? parseInt(setBonus || '0', 10) : 0;
+                        const bot = approvedBots.find(b => b.pubkey === sponsorBot);
+                        const feePct = bot?.feePct || 5;
+
+                        // Total Budget including fee
+                        const subtotal = isWizard ? ((rewardInt + sR) * wizardPoints.length + sB) * limitInt : (rewardInt + sR) * limitInt;
+                        const totalBudget = Math.ceil(subtotal * (1 + (feePct / 100)));
+
+                        if (!isNWCConnected) {
+                          Alert.alert("Wallet Required", "Connect your Lightning Wallet in Settings to fund this sponsorship.");
+                          return;
+                        }
+
+                        // Step 1: Confirm payment
+                        const confirmed = await new Promise((resolve) => {
+                          Alert.alert(
+                            "Confirm Sponsorship",
+                            `Sponsoring ${isWizard ? wizardPoints.length + ' points' : 'checkpoint'} for a total of ${totalBudget} sats.\n\n` +
+                            `Base/Point: ${rewardInt} sats\n` +
+                            (sponsorStreak ? `Streak Bonus: ${sR} sats (${sponsorDays} days)\n` : "") +
+                            (isWizard ? `Set Bonus: ${sB} sats\n` : "") +
+                            `Fee (${feePct}%): ${Math.ceil(subtotal * (feePct / 100))} sats`,
+                            [
+                              { text: "Cancel", onPress: () => resolve(false), style: "cancel" },
+                              { text: `⚡ PAY ${totalBudget} SATS`, onPress: () => resolve(true) }
+                            ]
+                          );
+                        });
+
+                        if (!confirmed) return;
+
+                        setPostingMessage(isWizard ? "Creating Scavenger Hunt..." : "Sponsoring POI...");
+                        setIsPostingOverlay(true);
                         setIsSponsoring(true);
                         try {
-                          const rewardInt = parseInt(sponsorReward || '0', 10);
-                          const limitInt = parseInt(sponsorLimit || '1', 10);
-                          const sR = sponsorStreak ? parseInt(streakReward || '0', 10) : 0;
-                          const sB = isWizard ? parseInt(setBonus || '0', 10) : 0;
-                          const bot = approvedBots.find(b => b.pubkey === sponsorBot);
-                          const feePct = bot?.feePct || 5;
-
-                          // Total Budget including fee
-                          const subtotal = isWizard ? ((rewardInt + sR) * wizardPoints.length + sB) * limitInt : (rewardInt + sR) * limitInt;
-                          const totalBudget = Math.ceil(subtotal * (1 + (feePct / 100)));
-
-                          if (!isNWCConnected) {
-                            Alert.alert("Wallet Required", "Connect your Lightning Wallet in Settings to fund this sponsorship.");
-                            setIsSponsoring(false);
-                            return;
-                          }
-
-                          // Step 1: Confirm payment
-                          const confirmed = await new Promise((resolve) => {
-                            Alert.alert(
-                              "Confirm Sponsorship",
-                              `Sponsoring ${isWizard ? wizardPoints.length + ' points' : 'checkpoint'} for a total of ${totalBudget} sats.\n\n` +
-                              `Base/Point: ${rewardInt} sats\n` +
-                              (sponsorStreak ? `Streak Bonus: ${sR} sats (${sponsorDays} days)\n` : "") +
-                              (isWizard ? `Set Bonus: ${sB} sats\n` : "") +
-                              `Fee (${feePct}%): ${Math.ceil(subtotal * (feePct / 100))} sats`,
-                              [
-                                { text: "Cancel", onPress: () => resolve(false), style: "cancel" },
-                                { text: `⚡ PAY ${totalBudget} SATS`, onPress: () => resolve(true) }
-                              ]
-                            );
-                          });
-
-                          if (!confirmed) {
-                            setIsSponsoring(false);
-                            return;
-                          }
-
                           await logEvent(`💎 Sponsoring ${isWizard ? 'Campaign' : 'POI'}: ${schedName} (${totalBudget} sats)`);
 
                           // Ensure bot pubkey is hex
@@ -4129,11 +4140,13 @@ export default function App() {
                             );
 
                             if (i === 0) {
+                              setPostingMessage("⚡ Funding via Lightning...");
                               // Step 3: Upfront escrow payment (once for the whole set)
                               const paid = await zapRideEvent(event.id, botHex, 33402, totalBudget, `Sponsorship Funding: ${schedName}`);
                               if (!paid) {
                                 throw new Error("Payment failed or was cancelled.");
                               }
+                              setPostingMessage("💎 Publishing Checkpoints...");
                             }
 
                             // Step 4: Publish funded event
@@ -4143,14 +4156,13 @@ export default function App() {
                           fetchCheckpoints().then(setCheckpoints).catch(() => { });
                           setFeedTab('sponsors');
                           Alert.alert("Success", isWizard ? "Scavenger Hunt published and funded!" : "Checkpoint sponsored and funded!");
-                        } catch (e: any) {
-                          Alert.alert("Publishing Failed", e.message || "Unknown error");
-                          setIsSponsoring(false);
                         } finally {
                           setIsSponsoring(false);
                         }
                       } else {
                         // Challenge / Contest
+                        setPostingMessage("Publishing Challenge...");
+                        setIsPostingOverlay(true);
                         setIsSponsoring(true);
                         try {
                           const startUnix = Math.floor(schedDate.getTime() / 1000);
@@ -4168,9 +4180,6 @@ export default function App() {
                           fetchContests().then(setActiveContests);
                           setFeedTab('contests');
                           Alert.alert("Success", "Challenge published!");
-                        } catch (e: any) {
-                          Alert.alert("Error", e.message || "Unknown error occurred");
-                          setIsSponsoring(false);
                         } finally {
                           setIsSponsoring(false);
                         }
@@ -4183,6 +4192,8 @@ export default function App() {
                       setShowFeed(true);
                     } catch (e: any) {
                       Alert.alert("Error", e.message || "Unknown error occurred");
+                    } finally {
+                      setIsPostingOverlay(false);
                     }
                   }}>
                   <Text style={styles.saveButtonText}>
@@ -4443,7 +4454,9 @@ export default function App() {
                 }}>
                   <Text style={styles.saveButtonText}>DISCARD</Text>
                 </TouchableOpacity>
-                <TouchableOpacity disabled={isSponsoring} style={[styles.saveButton, { flex: 2, backgroundColor: postRideSponsorMode ? '#eab308' : '#00ffaa' }]} onPress={async () => {
+                <TouchableOpacity disabled={isPostingOverlay} style={[styles.saveButton, { flex: 2, backgroundColor: postRideSponsorMode ? '#eab308' : '#00ffaa' }]} onPress={async () => {
+                  setPostingMessage(postRideScheduleMode ? "Scheduling Ride..." : "Publishing Ride...");
+                  setIsPostingOverlay(true);
                   try {
                     let routePoints = route.map(r => ({ lat: r.coords.latitude, lng: r.coords.longitude }));
                     if (trimTails && routePoints.length > 2) {
@@ -4532,6 +4545,8 @@ export default function App() {
                     await logEvent(`❌ PUBLISH ERROR: ${errorMsg}`);
                     Alert.alert("Failed to publish ride", errorMsg);
                     console.error("Failed to publish ride", e);
+                  } finally {
+                    setIsPostingOverlay(false);
                   }
                 }}>
                   <Text style={[styles.saveButtonText, { color: '#000' }]}>{isSponsoring ? 'SPONSORING...' : (postRideSponsorMode ? 'SPONSOR POI' : 'POST RIDE')}</Text>
@@ -4813,6 +4828,15 @@ export default function App() {
           </View>
         </KeyboardAvoidingView>
       )}
+      {isPostingOverlay && (
+        <View style={styles.loadingOverlay}>
+          <ActivityIndicator size="large" color="#00ffaa" style={styles.loadingSpinner} />
+          <Text style={styles.loadingTitle}>{postingMessage}</Text>
+          <Text style={styles.loadingSubtitle}>
+            Please wait while we broadcast your event to the Nostr network.
+          </Text>
+        </View>
+      )}
     </View>
   );
 }
@@ -4823,7 +4847,7 @@ const styles = StyleSheet.create({
   headerPanel: { position: 'absolute', top: Platform.OS === 'ios' ? 60 : 40, left: 20, right: 20, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: 'rgba(22, 26, 31, 0.85)', padding: 16, borderRadius: 16, borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.05)' },
   logoContainer: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   headerText: { color: '#fff', fontSize: 20, fontWeight: '800', letterSpacing: -0.5 },
-  statsOverlay: { position: 'absolute', top: 140, left: 20, right: 20, flexDirection: 'row', backgroundColor: 'rgba(22, 26, 31, 0.85)', borderRadius: 16, padding: 20, borderWidth: 1, borderColor: 'rgba(0, 255, 170, 0.3)' },
+  statsOverlay: { position: 'absolute', top: 210, left: 20, right: 20, flexDirection: 'row', backgroundColor: 'rgba(22, 26, 31, 0.85)', borderRadius: 16, padding: 20, borderWidth: 1, borderColor: 'rgba(0, 255, 170, 0.3)', zIndex: 1100 },
   statBox: { flex: 1, alignItems: 'center' },
   statDivider: { width: 1, backgroundColor: 'rgba(255, 255, 255, 0.1)' },
   statValue: { color: '#00ffaa', fontSize: 32, fontWeight: '800' },
@@ -4848,4 +4872,36 @@ const styles = StyleSheet.create({
   saveButtonText: { color: '#fff', fontWeight: '800', fontSize: 14, letterSpacing: 1 },
   privacyToggle: { backgroundColor: 'rgba(22, 26, 31, 0.85)', padding: 12, borderRadius: 16, marginBottom: 12, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.1)' },
   privacyToggleText: { color: '#00ffaa', fontWeight: '700', fontSize: 14 },
+  loadingOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0,10,20,0.85)',
+    zIndex: 9999,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 30,
+  },
+  loadingSpinner: {
+    marginBottom: 24,
+    transform: [{ scale: 1.5 }],
+  },
+  loadingTitle: {
+    color: '#00ffaa',
+    fontSize: 22,
+    fontWeight: '900',
+    textAlign: 'center',
+    marginBottom: 12,
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+  },
+  loadingSubtitle: {
+    color: 'rgba(255,255,255,0.6)',
+    fontSize: 14,
+    textAlign: 'center',
+    lineHeight: 20,
+    maxWidth: 280,
+  }
 });
