@@ -1030,10 +1030,11 @@ export interface CheckpointEvent {
     endTime: number;
     frequency?: 'once' | 'daily' | 'hourly';
     kind: 33402;
-    event: NDKEvent;
     streakDays?: number;
+    streakReward?: number;
     set?: string;
     setReward?: number;
+    rsvp?: string;
     routeId?: string;
     routeIndex?: number;
 }
@@ -1041,9 +1042,9 @@ export interface CheckpointEvent {
 export async function fetchRecentRides(onUpdate?: (rides: RideEvent[]) => void): Promise<RideEvent[]> {
     const ndk = await connectNDK();
     const filters: NDKFilter[] = [
-        { kinds: [33301 as any, 1301 as any], limit: 100 },
-        { kinds: [1 as any], '#t': ['bikel'], limit: 50 },
-        { kinds: [1 as any], '#t': ['cycling'], limit: 50 },
+        { kinds: [33301 as any, 1301 as any], limit: 250 },
+        { kinds: [1 as any], '#t': ['bikel'], limit: 100 },
+        { kinds: [1 as any], '#t': ['cycling'], limit: 100 },
     ];
 
     const ridesMap = new Map<string, RideEvent>();
@@ -1306,21 +1307,19 @@ export async function publishContestEvent(
 }
 
 
-export async function fetchContests(): Promise<ContestEvent[]> {
+export async function fetchContests(onUpdate?: (contests: ContestEvent[]) => void): Promise<ContestEvent[]> {
     const ndk = await connectNDK();
-
     const filters: NDKFilter[] = [{ kinds: [33401 as any], limit: 100 }];
 
     console.log("[Nostr] Fetching Bikel Challenges (Kind 33401)...");
-    const events = await fetchEventsWithTimeout(ndk, filters, 5000);
+    const contestsMap = new Map<string, ContestEvent>();
+    let lastEmitTime = 0;
+    const throttleInterval = 200;
 
-    const contests: ContestEvent[] = [];
-    const aTagsToFetch: string[] = [];
-
-    for (const event of events) {
+    const handleEvent = (event: NDKEvent) => {
         const hasBikelClient = event.getMatchingTags("client").some(t => t[1] === "bikel");
         const hasChallengeTag = event.getMatchingTags("t").some(t => ["bikel-challenge", "bikel"].includes(t[1]));
-        if (!hasBikelClient && !hasChallengeTag) continue;
+        if (!hasBikelClient && !hasChallengeTag) return;
 
         try {
             const name = event.getMatchingTags("title")[0]?.[1] || "Untitled Challenge";
@@ -1330,13 +1329,10 @@ export async function fetchContests(): Promise<ContestEvent[]> {
             const feeSats = parseInt(event.getMatchingTags("fee")[0]?.[1] || "0", 10);
             const invitedPubkeys = event.getMatchingTags("p").map(t => t[1]);
             const dTag = event.getMatchingTags("d")[0]?.[1];
-            if (!dTag) continue;
-
-            const aTag = `33401:${event.pubkey}:${dTag}`;
-            aTagsToFetch.push(aTag);
+            if (!dTag) return;
 
             if (endTime > (Date.now() / 1000) - 86400) {
-                contests.push({
+                contestsMap.set(event.id, {
                     id: event.id,
                     pubkey: event.author.npub,
                     hexPubkey: event.pubkey,
@@ -1352,37 +1348,49 @@ export async function fetchContests(): Promise<ContestEvent[]> {
                     attendees: [],
                     kind: 33401
                 });
+
+                const now = Date.now();
+                if (onUpdate && (now - lastEmitTime > throttleInterval || contestsMap.size === 1)) {
+                    lastEmitTime = now;
+                    onUpdate(Array.from(contestsMap.values()).sort((a, b) => b.createdAt - a.createdAt));
+                }
             }
         } catch (e) { }
-    }
+    };
+
+    await fetchEventsWithTimeout(ndk, filters, 8000, handleEvent);
+    const contests = Array.from(contestsMap.values());
+    const aTagsToFetch = contests.map(c => `33401:${c.hexPubkey}:${c.dTag}`);
 
     if (aTagsToFetch.length > 0) {
         const rsvpEvents = await fetchEventsWithTimeout(ndk, [{ kinds: [31925 as any], "#a": aTagsToFetch }], 5000);
         for (const rsvp of rsvpEvents) {
             const aTagMatch = rsvp.getMatchingTags("a")[0]?.[1];
             if (aTagMatch && rsvp.getMatchingTags("l")[0]?.[1] === "accepted") {
-                const contest = contests.find(c => `33401:${c.hexPubkey}:${c.dTag}` === aTagMatch);
+                const contest = contestsMap.get(rsvp.id) || Array.from(contestsMap.values()).find(c => `33401:${c.hexPubkey}:${c.dTag}` === aTagMatch);
                 if (contest && !contest.attendees.includes(rsvp.pubkey)) contest.attendees.push(rsvp.pubkey);
             }
         }
+        if (onUpdate) onUpdate(Array.from(contestsMap.values()).sort((a, b) => b.createdAt - a.createdAt));
     }
 
-    return contests.sort((a, b) => b.createdAt - a.createdAt);
+    return Array.from(contestsMap.values()).sort((a, b) => b.createdAt - a.createdAt);
 }
 
-export async function fetchCheckpoints(): Promise<CheckpointEvent[]> {
+export async function fetchCheckpoints(onUpdate?: (checkpoints: CheckpointEvent[]) => void): Promise<CheckpointEvent[]> {
     const ndk = await connectNDK();
     const filters: NDKFilter[] = [{ kinds: [33402 as any], "#t": ["bikel"], limit: 500 }];
     console.log("[Nostr] Fetching Bikel Checkpoints (Kind 33402)...");
-    const events = await fetchEventsWithTimeout(ndk, filters, 5000);
-
-    const checkpoints: CheckpointEvent[] = [];
+    
+    const checkpointsMap = new Map<string, CheckpointEvent>();
     const now = Math.floor(Date.now() / 1000);
+    let lastEmitTime = 0;
+    const throttleInterval = 200;
 
-    for (const event of events) {
+    const handleEvent = (event: NDKEvent) => {
         try {
             const dTag = event.getMatchingTags("d")[0]?.[1];
-            if (!dTag) continue;
+            if (!dTag) return;
 
             const title = event.getMatchingTags("title")[0]?.[1] || "POI Checkpoint";
             const locTag = event.getMatchingTags("location")[0]?.[1] || "";
@@ -1398,16 +1406,12 @@ export async function fetchCheckpoints(): Promise<CheckpointEvent[]> {
             const setReward = parseInt(event.getMatchingTags("set_reward")[0]?.[1] || "0", 10);
             const routeId = event.getMatchingTags("route_id")[0]?.[1];
             let routeIndex = parseInt(event.getMatchingTags("route_index")[0]?.[1] || "-1", 10);
-            if (routeIndex === -1) {
-                routeIndex = parseInt(event.getMatchingTags("n")[0]?.[1] || "-1", 10);
-            }
+            if (routeIndex === -1) routeIndex = parseInt(event.getMatchingTags("n")[0]?.[1] || "-1", 10);
 
-            if (isNaN(lat) || isNaN(lng)) continue;
+            if (isNaN(lat) || isNaN(lng)) return;
 
-            // Filter for active or upcoming (don't show expired)
-            // Fix: Include permanent POIs (endTime === 0)
             if (endTime === 0 || endTime > now - 86400) {
-                checkpoints.push({
+                checkpointsMap.set(event.id, {
                     id: event.id,
                     pubkey: event.author.npub,
                     hexPubkey: event.pubkey,
@@ -1421,18 +1425,26 @@ export async function fetchCheckpoints(): Promise<CheckpointEvent[]> {
                     endTime,
                     frequency,
                     kind: 33402,
-                    event: event,
                     streakDays: streakDays || undefined,
+                    streakReward: parseInt(event.getMatchingTags("streak_reward")[0]?.[1] || "0", 10) || undefined,
                     set,
                     setReward: setReward || undefined,
+                    rsvp: event.getMatchingTags("rsvp")[0]?.[1],
                     routeId,
                     routeIndex: routeIndex !== -1 ? routeIndex : undefined
                 });
+
+                const curNow = Date.now();
+                if (onUpdate && (curNow - lastEmitTime > throttleInterval || checkpointsMap.size === 1)) {
+                    lastEmitTime = curNow;
+                    onUpdate(Array.from(checkpointsMap.values()).sort((a, b) => b.rewardSats - a.rewardSats));
+                }
             }
         } catch (e) { }
-    }
+    };
 
-    return checkpoints;
+    await fetchEventsWithTimeout(ndk, filters, 8000, handleEvent);
+    return Array.from(checkpointsMap.values()).sort((a, b) => b.rewardSats - a.rewardSats);
 }
 
 export async function prepareCheckpointEvent(

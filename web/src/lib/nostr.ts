@@ -863,7 +863,7 @@ export async function fetchContests(): Promise<ContestEvent[]> {
     const filters: NDKFilter[] = [{ kinds: [33401 as any], limit: 500, since: now - (90 * 86400) }];
 
     console.log("[Nostr] Fetching Bikel Challenges (Kind 33401)...");
-    const events = await fetchEventsWithTimeout(ndk, filters, 12000);
+    const events = await fetchEventsWithTimeout(ndk, filters, 16000);
 
     const contests: ContestEvent[] = [];
     const aTagsToFetch: string[] = [];

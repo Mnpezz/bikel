@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { NDKEvent, NDKUser, NDKFilter } from '@nostr-dev-kit/ndk';
 import { format } from 'date-fns';
-import { StyleSheet, Text, View, TouchableOpacity, Dimensions, Platform, ScrollView, TextInput, Alert, KeyboardAvoidingView, ActivityIndicator, Image, RefreshControl, BackHandler, AppState, Switch, NativeModules } from 'react-native';
+import { StyleSheet, Text, View, TouchableOpacity, Dimensions, Platform, ScrollView, TextInput, Alert, KeyboardAvoidingView, ActivityIndicator, Image, RefreshControl, BackHandler, AppState, Switch, NativeModules, Linking, InteractionManager } from 'react-native';
 import * as Location from 'expo-location';
 import { LeafletView, MapLayerType, MapShapeType, WebViewLeafletEvents } from 'react-native-leaflet-view';
 import { Bike, Square, Play, Zap, History, Settings, CirclePlus, X, MessageSquare, Globe, LocateFixed, Map, Mail, Trash2, RotateCw, ChevronUp, Route, Clock, Gauge, Calendar, Navigation } from 'lucide-react-native';
@@ -81,7 +81,11 @@ async function logEvent(msg: string) {
 
 // Manual high-accuracy tracking (existing)
 TaskManager.defineTask(LOCATION_TASK, async ({ data, error }: any) => {
-  if (error) { console.error('[BackgroundLocation] Task error:', error.message); return; }
+  if (error) {
+    await logEvent(`📍 [GPS] Task Error: ${error.message}`);
+    console.error('[BackgroundLocation] Task error:', error.message);
+    return;
+  }
   if (data) {
     const { locations } = data as { locations: Location.LocationObject[] };
     if (!locations?.length) return;
@@ -239,8 +243,9 @@ TaskManager.defineTask(DRAFT_TASK, async ({ data, error }: any) => {
 
     await AsyncStorage.setItem('bikel_draft_state', JSON.stringify(state));
   } catch (e: any) {
-    console.error('[DraftTask] Failed:', e);
-    await logEvent(`⚠️ DraftTask Error: ${e.message || String(e)}`);
+    const err = e.message || String(e);
+    console.error('[DraftTask] Failed:', err);
+    await logEvent(`⚠️ [Auto-detect] Error: ${err}`);
   }
 });
 
@@ -381,6 +386,8 @@ export default function App() {
   const [showHistory, setShowHistory] = useState(false);
   const [showFeed, setShowFeed] = useState(false);
   const [isFeedLoading, setIsFeedLoading] = useState(false);
+  const [isSocialLoading, setIsSocialLoading] = useState(false);
+  const [isHistoryLoading, setIsHistoryLoading] = useState(false);
   const [feedTab, setFeedTab] = useState<'contests' | 'rides' | 'feed' | 'drafts' | 'chat' | 'activity' | 'sponsors'>('feed');
   const [showSettings, setShowSettings] = useState(false);
   const [customRelays, setCustomRelays] = useState<string[]>([]);
@@ -412,6 +419,54 @@ export default function App() {
     const { saveRelays } = await import('./src/lib/nostr');
     await saveRelays(updated);
   };
+
+  // ── AsyncStorage Data Hydration ──────────────────
+  useEffect(() => {
+    const hydrate = async () => {
+      try {
+        const [rides, contests, cps, scheduled] = await Promise.all([
+          AsyncStorage.getItem('bikel_cache_global_rides'),
+          AsyncStorage.getItem('bikel_cache_contests'),
+          AsyncStorage.getItem('bikel_cache_checkpoints'),
+          AsyncStorage.getItem('bikel_cache_scheduled')
+        ]);
+        if (rides) setGlobalRides(JSON.parse(rides));
+        if (contests) setActiveContests(JSON.parse(contests));
+        if (cps) setCheckpoints(JSON.parse(cps));
+        if (scheduled) setScheduledRides(JSON.parse(scheduled));
+        console.log('[Hydration] Instant UI populated from cache');
+      } catch (e) {
+        console.warn('[Hydration] Failed to load cache:', e);
+      }
+    };
+    hydrate();
+  }, []);
+
+  // ── AsyncStorage Data Persistence ────────────────
+  useEffect(() => {
+    if (globalRides.length > 0) {
+      AsyncStorage.setItem('bikel_cache_global_rides', JSON.stringify(globalRides.slice(0, 50))).catch(() => {});
+    }
+  }, [globalRides]);
+
+  useEffect(() => {
+    if (activeContests.length > 0) {
+      AsyncStorage.setItem('bikel_cache_contests', JSON.stringify(activeContests.slice(0, 50))).catch(() => {});
+    }
+  }, [activeContests]);
+
+  useEffect(() => {
+    if (checkpoints.length > 0) {
+      AsyncStorage.setItem('bikel_cache_checkpoints', JSON.stringify(checkpoints)).catch(() => {});
+    }
+  }, [checkpoints]);
+
+  useEffect(() => {
+    if (scheduledRides.length > 0) {
+      AsyncStorage.setItem('bikel_cache_scheduled', JSON.stringify(scheduledRides.slice(0, 50))).catch(() => {});
+    }
+  }, [scheduledRides]);
+
   const [showSchedule, setShowSchedule] = useState(false);
 
   // Auto-detect drafts
@@ -509,7 +564,6 @@ export default function App() {
   const [reactions, setReactions] = useState<Record<string, ReactionSummary[]>>({});
   const [expandedComments, setExpandedComments] = useState<Record<string, boolean>>({});
   const [reactingId, setReactingId] = useState<string | null>(null);
-  const [isSocialLoading, setIsSocialLoading] = useState(false);
 
   const [selectedMapRide, setSelectedMapRide] = useState<RideEvent | null>(null);
   const [selectedMapGroup, setSelectedMapGroup] = useState<GroupedCheckpoint | null>(null);
@@ -603,6 +657,7 @@ export default function App() {
   };
 
   // ── Sync auto-detect task with UI & storage ──────────
+  const mountedRef = useRef(true);
   const isSyncingRef = useRef(false);
   const pollerRef = useRef<NodeJS.Timeout | null>(null);
   const chatScrollRef = useRef<any>(null);
@@ -647,8 +702,8 @@ export default function App() {
               distanceInterval: 10,
               timeInterval: 5000,
               foregroundService: {
-                notificationTitle: 'Bikel auto-detect active',
-                notificationBody: 'Watching for bike rides in background',
+                notificationTitle: '🚴 Bikel auto-detect is active',
+                notificationBody: 'Watching for bike rides in background…',
                 notificationColor: '#444',
               },
               pausesUpdatesAutomatically: false,
@@ -693,112 +748,81 @@ export default function App() {
 
   // ── Mount ──────────────────────────────────────────
   useEffect(() => {
-    let mounted = true;
-    // Connect NDK first, then immediately start fetching feeds in the background.
-    // This fires before the slow SecureStore/NWC/GPS awaits so relays have
-    // maximum time to respond while the rest of init is happening.
-    // Set currentHex before loadFeeds so ENTERED button reflects reality immediately
-    getPublicKeyHex().then(hex => { if (hex && mounted) setCurrentHex(hex); }).catch(() => { });
+    mountedRef.current = true;
 
-    connectNDK().then(() => {
-      if (mounted) {
-        console.log('[NDK] Connected on load.');
-        loadFeeds();
-      }
-    });
+    // 1. Initial State Hydration (Immediate)
+    getPublicKeyHex().then(hex => { if (hex && mountedRef.current) setCurrentHex(hex); }).catch(() => { });
 
-    (async () => {
-      await logEvent("🚀 App Mount");
+    // 2. Foreground Permission & Data Healing
+    const appStateListener = AppState.addEventListener('change', async (status) => {
+      if (status === 'active' && mountedRef.current) {
+        await logEvent("📱 App active — syncing permissions & drafts");
+        const { status: bgStatus } = await Location.getBackgroundPermissionsAsync();
+        const autoSetting = await AsyncStorage.getItem('bikel_auto_detect');
+        const isRunning = await Location.hasStartedLocationUpdatesAsync(DRAFT_TASK);
 
-      // ── Location FIRST — show map position immediately ──────────────────
-      // This runs before NWC/auto-detect init so the map isn't blank for 25s
-      try {
-        const { status: locStatus } = await Location.requestForegroundPermissionsAsync();
-        if (locStatus === 'granted') {
-          Location.requestBackgroundPermissionsAsync().then(({ status: bgStatus }) => {
-            if (bgStatus === 'granted') {
-              logEvent("✅ Background location granted — syncing auto-detect");
-              syncAutoDetectState();
-            }
-          }).catch(() => { });
-          const lastKnown = await Location.getLastKnownPositionAsync({});
-          if (lastKnown) {
-            setLocation(lastKnown);
-            setMapCenter({ lat: lastKnown.coords.latitude, lng: lastKnown.coords.longitude });
-          }
-          Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }).then(loc => {
-            setLocation(loc);
-            setMapCenter({ lat: loc.coords.latitude, lng: loc.coords.longitude });
-          }).catch(() => { });
-        } else {
-          logEvent("❌ Location permissions denied");
+        if (bgStatus === 'granted' && autoSetting === 'true' && !isRunning) {
+          await syncAutoDetectState(true);
         }
-      } catch (e) { console.warn('Location init failed:', e); }
-
-      // ── Slow inits run AFTER location is shown ───────────────────────────
-      try {
-        const hex = await getPublicKeyHex();
-        if (hex) setCurrentHex(hex);
-      } catch (e) { console.error("Failed to fetch public key hex on mount:", e); }
-
-      // ── Background inits (Staggered to prevent bridge saturation) ──────
-      (async () => {
-        // 1. NWC Handshake & Secondary systems (Delayed 10s to clear bridge for map data)
-        // This ensures the first 5-10s are dedicated purely to Nostr data and map rendering.
-        // 1. Critical Background Systems (2s delay)
-        setTimeout(async () => {
-          if (!mounted) return;
-          try {
-            // Check auto-detect but DON'T force-restart existing tasks
-            await syncAutoDetectState();
-            await loadDrafts();
-            const { status: nStatus } = await Notifications.getPermissionsAsync();
-            if (nStatus !== 'granted') await Notifications.requestPermissionsAsync();
-          } catch (e) { }
-        }, 2000);
-
-        // 2. Heavy Network Systems (10s delay)
-        setTimeout(async () => {
-          if (!mounted) return;
-          try {
-            const savedNwc = await SecureStore.getItemAsync('bikel_nwc_uri');
-            if (savedNwc) {
-              setNwcURI(savedNwc);
-              connectNWC(savedNwc).then(success => {
-                if (success && mounted) setIsNWCConnected(true);
-              }).catch(() => { });
-            }
-          } catch (e) { }
-          // Draft sync to Nostr (Kind 33301/33302) is not implemented yet.
-          // finalizeDraft() handles publishing on user interaction.
-        }, 10000);
-      })();
-    })();
-
-    // Poll for new drafts every 60s
-    if (!pollerRef.current) {
-      pollerRef.current = setInterval(() => {
-        loadDrafts();
-        logEvent("🔄 Periodic draft sync");
-      }, 60000);
-    }
-
-    // Listen for AppState changes (to re-sync when coming back from background/settings)
-    const appStateListener = AppState.addEventListener('change', async (nextAppState) => {
-      if (nextAppState === 'active') {
-        await syncAutoDetectState();
         await loadDrafts();
         fetchCheckpoints().then(setCheckpoints).catch(() => { });
       }
     });
 
+    // 3. Staggered Background Initialization (Future-proofed replacement for deprecated InteractionManager)
+    const initStagger = setTimeout(async () => {
+      if (!mountedRef.current) return;
+      await logEvent("🚀 Interactive session ready — starting staggered background sync");
+
+      try {
+        const { status: locStatus } = await Location.requestForegroundPermissionsAsync();
+        if (locStatus === 'granted') {
+          const { status: bgStatus } = await Location.getBackgroundPermissionsAsync();
+          if (bgStatus !== 'granted') Location.requestBackgroundPermissionsAsync().catch(() => {});
+          
+          const lastKnown = await Location.getLastKnownPositionAsync({});
+          if (lastKnown && mountedRef.current) {
+            setLocation(lastKnown);
+            setMapCenter({ lat: lastKnown.coords.latitude, lng: lastKnown.coords.longitude });
+          }
+        }
+      } catch (e) {}
+
+      await connectNDK();
+      if (mountedRef.current) {
+        loadFeeds();
+        loadDrafts();
+        syncAutoDetectState(false);
+      }
+
+      const secondaryStagger = setTimeout(async () => {
+        if (!mountedRef.current) return;
+        const { status: nStatus } = await Notifications.getPermissionsAsync();
+        if (nStatus !== 'granted') Notifications.requestPermissionsAsync().catch(() => {});
+
+        try {
+          const savedNwc = await SecureStore.getItemAsync('bikel_nwc_uri');
+          if (savedNwc) {
+            setNwcURI(savedNwc);
+            connectNWC(savedNwc).then(success => {
+              if (success && mountedRef.current) setIsNWCConnected(true);
+            }).catch(() => { });
+          }
+        } catch (e) {}
+      }, 5000);
+
+      return () => clearTimeout(secondaryStagger);
+    }, 1000);
+
+    // 4. Cleanup
     return () => {
-      mounted = false;
+      mountedRef.current = false;
+      appStateListener.remove();
+      clearTimeout(initStagger);
       if (pollerRef.current) {
         clearInterval(pollerRef.current);
         pollerRef.current = null;
       }
-      appStateListener.remove();
     };
   }, []);
 
@@ -886,7 +910,7 @@ export default function App() {
       r.visibility === 'full' &&
       r.route &&
       r.route.length > 0 &&
-      (r.confidence === undefined || r.confidence >= 0.7)
+      (r.confidence === undefined || r.confidence >= 0.5)
     );
   }, [globalRides]);
 
@@ -1122,15 +1146,15 @@ export default function App() {
       if (p.nip05 && !editNip05) setEditNip05(p.nip05);
       if (p.lud16 && !editLud16) setEditLud16(p.lud16);
     }
-  }, [showSettings, currentHex, profiles]);
+  }, [showSettings, currentHex, profiles, editName, editAbout, editPicture, editNip05, editLud16]);
 
-  const loadFeeds = async (retryNum = 0) => {
+  const loadEssentialFeeds = async () => {
+    if (isFeedLoading) return;
     setIsFeedLoading(true);
-    setLoadingStatus(retryNum === 0 ? 'Syncing rides...' : `Retrying... (${retryNum})`);
+    setLoadingStatus('RIDES');
 
     try {
-      // 1. Map Data (STREAMING LOAD)
-      // fetchRecentRides now accepts an onUpdate callback that fires as rides arrive.
+      // 1. Recent Rides (STREAMING LOAD)
       fetchRecentRides((incrementalRides) => {
         if (incrementalRides.length > 0) {
           setGlobalRides(prev => {
@@ -1139,13 +1163,11 @@ export default function App() {
             incrementalRides.forEach(r => obj[r.id] = r);
             return Object.values(obj).sort((a, b) => b.time - a.time);
           });
-          setLoadingStatus(''); // Clear spinner as soon as first batch arrives
-          // Fetch top 10 profiles immediately for the first incremental batch
+          setLoadingStatus('');
           const topPubkeys = incrementalRides.slice(0, 10).map(ride => ride.hexPubkey || ride.pubkey);
           loadAuthorProfiles(topPubkeys).catch(() => { });
         }
       }).then(finalRides => {
-        // Final pass once 15s window or EOSE is hit
         if (finalRides.length > 0) {
           setGlobalRides(prev => {
             const obj: { [key: string]: RideEvent } = {};
@@ -1153,14 +1175,16 @@ export default function App() {
             finalRides.forEach(r => obj[r.id] = r);
             return Object.values(obj).sort((a, b) => b.time - a.time);
           });
-          // LIMIT to top 30 to avoid thread lock
           const topPubkeys = finalRides.slice(0, 30).map(ride => ride.hexPubkey || ride.pubkey);
           loadAuthorProfiles(topPubkeys).catch(() => { });
         }
       }).catch(() => { });
 
-      // 2. Secondary Data (Independent streams)
-      fetchScheduledRides().then(r => {
+      // ── Micro-Staggering: 500ms gaps between streams ───────────
+      await new Promise(r => setTimeout(r, 600));
+
+      // 2. Scheduled Rides
+      if (mountedRef.current) fetchScheduledRides().then(r => {
         setScheduledRides(prev => {
           const obj: { [key: string]: ScheduledRideEvent } = {};
           prev.forEach(s => obj[s.id] = s);
@@ -1170,7 +1194,16 @@ export default function App() {
         loadAuthorProfiles(r.map(s => s.hexPubkey || s.pubkey)).catch(() => { });
       }).catch(() => { });
 
-      fetchContests().then(r => {
+      fetchContests((incremental) => {
+        if (incremental.length > 0) {
+          setActiveContests(prev => {
+            const obj: { [key: string]: ContestEvent } = {};
+            prev.forEach(c => obj[c.id] = c);
+            incremental.forEach(c => obj[c.id] = c);
+            return Object.values(obj).sort((a, b) => b.createdAt - a.createdAt);
+          });
+        }
+      }).then(r => {
         setActiveContests(prev => {
           const obj: { [key: string]: ContestEvent } = {};
           prev.forEach(c => obj[c.id] = c);
@@ -1180,30 +1213,19 @@ export default function App() {
         loadAuthorProfiles(r.map(c => c.hexPubkey || c.pubkey)).catch(() => { });
       }).catch(() => { });
 
-      fetchCheckpoints().then(r => {
-        setCheckpoints(r);
-      }).catch(() => { });
-
-      fetchMyRides().then(r => {
-        setMyRides(prev => {
-          const obj: { [key: string]: RideEvent } = {};
-          prev.forEach(ride => obj[ride.id] = ride);
-          r.forEach(ride => obj[ride.id] = ride);
-          return Object.values(obj).sort((a, b) => b.time - a.time);
-        });
-      }).catch(() => { });
-
-      fetchMyClaims().then(setMyClaims).catch(() => { });
-
-      fetchAllBikelSocial((comms) => {
-        if (comms && comms.length > 0) {
-          setGlobalComments(comms);
-          // Only load first few profiles to avoid bridge spike
-          loadAuthorProfiles(comms.slice(0, 15).map(c => c.pubkey)).catch(() => { });
+      // 3. Checkpoints (Map POIs)
+      fetchCheckpoints((incremental) => {
+        if (incremental.length > 0) {
+          setCheckpoints(prev => {
+            const obj: { [key: string]: CheckpointEvent } = {};
+            prev.forEach(cp => obj[cp.id] = cp);
+            incremental.forEach(cp => obj[cp.id] = cp);
+            return Object.values(obj).sort((a, b) => b.rewardSats - a.rewardSats);
+          });
         }
-      }, []).catch(() => { });
+      }).then(setCheckpoints).catch(() => { });
 
-      // 3. Fetch User RSVPs (Kind 31925) to show "JOINED" state
+      // 4. Fetch User RSVPs (to show "JOINED")
       getPublicKeyHex().then(async (hex) => {
         if (!hex) return;
         try {
@@ -1221,12 +1243,53 @@ export default function App() {
       }).catch(() => { });
 
     } catch (e) {
-      console.error("Critical error in loadFeeds:", e);
-      setLoadingStatus('Error loading feeds.');
+      console.error("Error in loadEssentialFeeds:", e);
     } finally {
       setIsFeedLoading(false);
     }
   };
+
+  const loadSocialFeeds = async () => {
+    if (isSocialLoading) return;
+    setIsSocialLoading(true);
+    logEvent("🔄 Social Refresh: starting...");
+    try {
+      fetchAllBikelSocial((comms) => {
+        if (comms && comms.length > 0) {
+          setGlobalComments(comms);
+          loadAuthorProfiles(comms.slice(0, 15).map(c => c.pubkey)).catch(() => { });
+        }
+      }, []).catch(() => { });
+    } catch (e) {
+      console.error("Error in loadSocialFeeds:", e);
+    } finally {
+      setIsSocialLoading(false);
+    }
+  };
+
+  const loadHistoryFeeds = async () => {
+    if (isHistoryLoading) return;
+    setIsHistoryLoading(true);
+    logEvent("🔄 History Refresh: starting...");
+    try {
+      fetchMyRides().then(r => {
+        setMyRides(prev => {
+          const obj: { [key: string]: RideEvent } = {};
+          prev.forEach(ride => obj[ride.id] = ride);
+          r.forEach(ride => obj[ride.id] = ride);
+          return Object.values(obj).sort((a, b) => b.time - a.time);
+        });
+      }).catch(() => { });
+
+      fetchMyClaims().then(setMyClaims).catch(() => { });
+    } catch (e) {
+      console.error("Error in loadHistoryFeeds:", e);
+    } finally {
+      setIsHistoryLoading(false);
+    }
+  };
+
+  const loadFeeds = loadEssentialFeeds;
 
   const handleRefreshFeeds = async () => {
     setIsRefreshing(true);
@@ -1448,7 +1511,7 @@ export default function App() {
         } catch (e) { }
 
         await Location.startLocationUpdatesAsync(LOCATION_TASK, {
-          accuracy: Location.Accuracy.BestForNavigation,
+          accuracy: Location.Accuracy.High,
           distanceInterval: 5,
           timeInterval: 3000,
           showsBackgroundLocationIndicator: true,
@@ -1466,8 +1529,10 @@ export default function App() {
         console.log('[Tracking] Started successfully');
 
       } catch (e: any) {
+        const err = e?.message || 'Unknown error';
+        await logEvent(`❌ [Tracking] Failed to start: ${err}`);
         console.error('[Tracking] Failed to start:', e);
-        Alert.alert("Could Not Start Tracking", `Error: ${e?.message || 'Unknown error'}.`);
+        Alert.alert("Could Not Start Tracking", `Error: ${err}.`);
       }
     }
   };
@@ -1771,7 +1836,7 @@ export default function App() {
               const setGroups: Record<string, any[]> = {};
 
               selectedMapGroup.events.forEach(cp => {
-                const s = cp.event.getMatchingTags('set')[0]?.[1];
+                const s = cp.set;
                 if (s) {
                   if (!setGroups[s]) {
                     setGroups[s] = [];
@@ -1815,10 +1880,10 @@ export default function App() {
                         </View>
                       </View>
 
-                      {cp.event.getMatchingTags('rsvp')[0]?.[1] === 'required' && (
+                      {cp.rsvp === 'required' && (
                         <TouchableOpacity
                           style={{ backgroundColor: themeColor, paddingVertical: 10, borderRadius: 8, alignItems: 'center', marginTop: 12 }}
-                          onPress={async () => { setIsZapping(true); const success = await publishRSVP(cp.id, cp.event.pubkey); setIsZapping(false); if (success) Alert.alert("Joined!"); }}
+                          onPress={async () => { setIsZapping(true); const success = await publishRSVP(cp.id, cp.hexPubkey); setIsZapping(false); if (success) Alert.alert("Joined!"); }}
                         >
                           <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 13 }}>JOIN POI</Text>
                         </TouchableOpacity>
@@ -1826,10 +1891,10 @@ export default function App() {
                     </View>
                   );
                 } else {
-                  const items = group.items!;
+                   const items = group.items!;
                   const firstItem = items[0];
-                  const streakReward = parseInt(firstItem.event.getMatchingTags('streak_reward')[0]?.[1] || '0');
-                  const rsvpRequired = items.some(i => i.event.getMatchingTags('rsvp')[0]?.[1] === 'required');
+                  const streakReward = firstItem.streakReward || 0;
+                  const rsvpRequired = items.some(i => i.rsvp === 'required');
                   const aTag = `${firstItem.kind || 33402}:${firstItem.hexPubkey}:${firstItem.dTag}`;
                   const isJoined = joinedIds.has(firstItem.id) || joinedIds.has(aTag);
 
@@ -2020,7 +2085,9 @@ export default function App() {
             setShowPostRideModal(false); setPostingFromDraft(null); setSelectedMapRide(null);
             setShowSettings(false); setShowSchedule(false); setShowHistory(false); setShowFeed(false);
             setSelectedContest(null);
-            setShowSocialOverlay(!showSocialOverlay);
+            const next = !showSocialOverlay;
+            setShowSocialOverlay(next);
+            if (next) loadSocialFeeds();
           }}>
             <MessageSquare size={24} color={showSocialOverlay ? "#00ffaa" : "#fff"} />
           </TouchableOpacity>
@@ -2036,7 +2103,9 @@ export default function App() {
             setShowPostRideModal(false); setPostingFromDraft(null); setSelectedMapRide(null);
             setShowSettings(false); setShowSchedule(false); setShowFeed(false); setShowSocialOverlay(false);
             setSelectedContest(null);
-            setShowHistory(!showHistory);
+            const next = !showHistory;
+            setShowHistory(next);
+            if (next) loadHistoryFeeds();
           }}>
             <History size={24} color={showHistory ? "#00ffaa" : "#fff"} />
           </TouchableOpacity>
@@ -2054,16 +2123,21 @@ export default function App() {
                 setAuthMethod(method);
                 if (nsec) setCurrentNsec(nsec);
                 if (npub) setCurrentNpub(npub);
-                if (hex) {
-                  setCurrentHex(hex);
-                  // 1. Explicitly fetch/refresh local profile
-                  loadAuthorProfiles([hex]).catch(() => { });
+                  if (hex) {
+                    setCurrentHex(hex);
+                    // 1. Trigger background fetch for latest profile
+                    loadAuthorProfiles([hex]).catch(() => { });
 
-                  // 2. Initial populate (if already cached)
-                  const p = profiles[hex];
-                  if (p) { setEditName(p.name || ''); setEditAbout(p.about || ''); setEditPicture(p.picture || ''); setEditNip05(p.nip05 || ''); setEditLud16(p.lud16 || ''); }
-                  else { setEditName(''); setEditAbout(''); setEditPicture(''); setEditNip05(''); setEditLud16(''); }
-                }
+                    // 2. Initial populate (if already cached) - subsequent sync handled by useEffect
+                    const p = profiles[hex];
+                    if (p) {
+                      if (!editName) setEditName(p.name || '');
+                      if (!editAbout) setEditAbout(p.about || '');
+                      if (!editPicture) setEditPicture(p.picture || '');
+                      if (!editNip05) setEditNip05(p.nip05 || '');
+                      if (!editLud16) setEditLud16(p.lud16 || '');
+                    }
+                  }
               } catch (e) { console.error("Settings keys load error:", e); }
             }
             setShowSettings(!showSettings);
@@ -2096,6 +2170,23 @@ export default function App() {
                   <View style={{ width: 20, height: 20, borderRadius: 10, backgroundColor: '#fff', alignSelf: autoDetect ? 'flex-end' : 'flex-start' }} />
                 </View>
               </TouchableOpacity>
+            </View>
+
+            {/* Battery Optimization */}
+            <View style={[styles.settingsSection, { borderColor: 'rgba(255,153,0,0.1)' }]}>
+              <Text style={[styles.settingsLabel, { color: '#ff9900' }]}>BATTERY OPTIMIZATION (ANDROID)</Text>
+              <Text style={{ color: '#9ba1a6', fontSize: 12, marginBottom: 12, lineHeight: 18 }}>
+                Android may kill background recording to save power. For reliable auto-detect, set Bikel to "Unrestricted" or "Don't Optimize".
+              </Text>
+              <TouchableOpacity
+                style={{ backgroundColor: 'rgba(255,153,0,0.1)', paddingVertical: 14, borderRadius: 10, borderWidth: 1, borderColor: 'rgba(255,153,0,0.3)', alignItems: 'center' }}
+                onPress={() => Linking.openSettings()}
+              >
+                <Text style={{ color: '#ff9900', fontWeight: 'bold', fontSize: 13 }}>🔍 CONFIGURE APP PERMISSIONS</Text>
+              </TouchableOpacity>
+              <Text style={{ color: '#666', fontSize: 10, marginTop: 10, textAlign: 'center' }}>
+                Ensure "Location" is "Always" and "Notifications" are "ON".
+              </Text>
             </View>
 
             <View style={styles.settingsSection}>
@@ -2313,10 +2404,13 @@ export default function App() {
       {showHistory && (
         <View style={styles.historyOverlay}>
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-            <Text style={styles.historyTitle}>My Rides</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+              <Text style={styles.historyTitle}>My Rides</Text>
+              {isHistoryLoading && <ActivityIndicator size="small" color="#00ffaa" />}
+            </View>
             <Text style={{ color: '#9ba1a6', fontSize: 13 }}>{myRides.length} ride{myRides.length !== 1 ? 's' : ''}</Text>
           </View>
-          <ScrollView style={{ flex: 1 }} refreshControl={<RefreshControl refreshing={isRefreshing} onRefresh={handleRefreshFeeds} tintColor="#fff" />}>
+          <ScrollView style={{ flex: 1 }} refreshControl={<RefreshControl refreshing={isHistoryLoading} onRefresh={loadHistoryFeeds} tintColor="#fff" />}>
             {myRides.length === 0 ? (
               <Text style={styles.emptyText}>No rides recorded yet.</Text>
             ) : (
@@ -2463,10 +2557,10 @@ export default function App() {
         <View style={styles.historyOverlay}>
           <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
             <Text style={styles.historyTitle}>Global Feed</Text>
-            {isFeedLoading && (
+            {(isFeedLoading || loadingStatus !== '') && (
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                <ActivityIndicator size="small" color="#00ffaa" />
-                <Text style={{ color: '#00ffaa', fontSize: 11 }}>{loadingStatus || 'Loading…'}</Text>
+                <ActivityIndicator size="small" color="#00ffaa" style={{ opacity: 0.8 }} />
+                <Text style={{ color: '#00ffaa', fontSize: 10, fontWeight: 'bold' }}>{(loadingStatus || 'SYNCING').toUpperCase()}</Text>
               </View>
             )}
           </View>
@@ -2704,7 +2798,7 @@ export default function App() {
                           )}
                         </View>
 
-                        {cp.event.getMatchingTags('streak_reward')[0] && (() => {
+                        {cp.streakReward && (() => {
                           const streakDays = cp.streakDays || 5;
                           const rideHits = myRides.filter(r => r.checkpointHitId === cp.id).map(r => r.time || 0);
                           const claimHits = myClaims.filter(c => c.checkpointId === cp.id).map(c => c.timestamp);
@@ -2722,7 +2816,7 @@ export default function App() {
                           }
                           return (
                             <View style={{ backgroundColor: 'rgba(255,255,255,0.03)', padding: 10, borderRadius: 8, marginBottom: 12, borderLeftWidth: 3, borderLeftColor: themeColor }}>
-                              <Text style={{ color: themeColor, fontWeight: 'bold', fontSize: 12, marginBottom: 4 }}>🎁 STREAK BONUS: {cp.event.getMatchingTags('streak_reward')[0][1]} sats</Text>
+                              <Text style={{ color: themeColor, fontWeight: 'bold', fontSize: 12, marginBottom: 4 }}>🎁 STREAK BONUS: {cp.streakReward} sats</Text>
                               <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
                                 <Text style={{ color: '#888', fontSize: 10 }}>Visit {streakDays} days in a row</Text>
                                 <Text style={{ color: themeColor, fontSize: 10, fontWeight: 'bold' }}>DAY {currentStreak}/{streakDays}</Text>
@@ -2732,7 +2826,7 @@ export default function App() {
                         })()}
 
                         <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
-                          {!isHunt && cp.event.getMatchingTags('rsvp')[0]?.[1] === 'required' && (() => {
+                          {!isHunt && cp.rsvp === 'required' && (() => {
                             const aTag = `${cp.kind}:${cp.hexPubkey}:${cp.dTag}`;
                             const isJoined = joinedIds.has(cp.id) || joinedIds.has(aTag);
                             return (
@@ -3234,7 +3328,7 @@ export default function App() {
             </TouchableOpacity>
           </View>
 
-          <ScrollView ref={socialTab === 'chat' ? chatScrollRef : socialScrollRef} style={{ flex: 1 }} showsVerticalScrollIndicator={false} refreshControl={<RefreshControl refreshing={isSocialLoading} onRefresh={handleSocialRefresh} tintColor="#fff" />}>
+          <ScrollView ref={socialTab === 'chat' ? chatScrollRef : socialScrollRef} style={{ flex: 1 }} showsVerticalScrollIndicator={false} refreshControl={<RefreshControl refreshing={isSocialLoading} onRefresh={loadSocialFeeds} tintColor="#fff" />}>
             {socialTab === 'chat' ? (
               globalMessages.length === 0 && !isSocialLoading ? (
                 <Text style={{ color: '#666', textAlign: 'center', marginTop: 40 }}>No chat messages yet...</Text>
