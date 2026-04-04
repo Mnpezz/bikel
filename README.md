@@ -4,9 +4,10 @@ Because Bikel uses Nostr and `NIP-52` Time-Based events, your location data belo
 The Bikel platform is divided into four independent components that communicate symbiotically over Nostr websocket relays:
 
 1. **`apk/` (The Mobile Tracker)**
-    - Built natively in React Native & Expo. Standardized on **NIP-1301** for fitness activities.
-    - Features background GPS tracking, "Privacy Tail-Trimming," and automatic key generation.
-    - Optimized for your dedicated relay to ensure zero-latency ride publishing.
+    - Built natively in React Native. Standardized on **NIP-1301** for fitness activities.
+    - **v1.5.0 Upgrade**: Migrated to a custom **Native Foreground Service** (bypassing Google Play Services).
+    - **De-Googled Support**: Fully compatible with LineageOS and GrapheneOS for reliable background auto-detection.
+    - Features "Privacy Tail-Trimming," hardware-bound GPS polling, and offline-first drafting.
 
 2. **`web/` (The Global Dashboard)**
     - React + Vite dashboard for map overlays, NWC zapping, and CC0 data exports.

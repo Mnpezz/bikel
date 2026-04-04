@@ -33,8 +33,9 @@ if [ $IS_RELEASE -eq 1 ]; then
     echo "📦 Bundling JavaScript assets (Offline bundle)..."
     npx expo export --platform android
     
-    echo "🔨 Compiling standalone APK via Gradle..."
+    echo "🔨 [Force Refresh] Compiling standalone APK via Gradle..."
     cd android
+    rm -rf app/build
     ./gradlew assembleRelease
     BUILD_STAT=$?
     cd ..

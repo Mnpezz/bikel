@@ -1,6 +1,6 @@
 {
   "name": "apk",
-  "version": "1.4.3",
+  "version": "1.5.0",
   "main": "index.ts",
   "scripts": {
     "start": "expo start",
@@ -30,6 +30,8 @@
     "nostr-tools": "^2.23.2",
     "react": "19.2.0",
     "react-native": "0.83.2",
+    "react-native-background-actions": "^4.0.1",
+    "react-native-geolocation-service": "^5.3.1",
     "react-native-get-random-values": "^2.0.0",
     "react-native-leaflet-view": "^1.1.2",
     "react-native-maps": "1.26.20",

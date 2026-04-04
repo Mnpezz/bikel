@@ -1,10 +1,10 @@
 import { useEffect, useState, useMemo, useRef } from 'react';
 import { MapContainer, TileLayer, CircleMarker, Popup, Polyline, useMap, LayerGroup } from 'react-leaflet';
-import { Bike, Activity, CalendarPlus, Calendar, Zap, LogIn, Info, HelpCircle, Smartphone, X, Clock, Route, CheckCircle, RefreshCw, Map as MapIcon, MapPin, ChevronUp, ChevronDown, Users, Database, Download, BarChart2, Trash2, Gauge, ArrowLeft, Trophy } from 'lucide-react';
+import { Bike, Activity, CalendarPlus, Calendar, Zap, LogIn, Info, HelpCircle, Smartphone, X, Clock, Route, CheckCircle, RefreshCw, Map as MapIcon, MapPin, ChevronUp, ChevronDown, Users, Database, Download, BarChart2, Trash2, Gauge, ArrowLeft, Trophy, Copy } from 'lucide-react';
 import { formatDistanceToNow, format, addHours } from 'date-fns';
 import { connectNDK, fetchRecentRides, fetchUserRides, fetchScheduledRides, fetchContests, fetchCheckpoints, loginNip07, publishRSVP, publishContestRSVP, connectNWC, zapRideEvent, fetchComments, publishComment, fetchDMs, sendDM, deleteRide, fetchAllRidesInRange, prepareCheckpointEvent, prepareContestEvent, fetchUserRevenue, ESCROW_PUBKEY, fetchApprovedBots, fetchEventsWithTimeout } from './lib/nostr';
 import type { RideEvent, ScheduledRideEvent, RideComment, DMessage, ContestEvent, CheckpointEvent, ApprovedBot } from './lib/nostr';
-import type { NDKUser } from '@nostr-dev-kit/ndk';
+import { NDKEvent, type NDKUser } from '@nostr-dev-kit/ndk';
 import './App.css';
 
 // ── Types ──────────────────────────────────────────────
@@ -974,10 +974,33 @@ function App() {
                         <h2 style={{ margin: 0, fontSize: '1.2rem', color: '#00ffaa', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
                           {selectedRide.title || "Ride Details"}
                         </h2>
+                        <button
+                          onClick={async () => {
+                            try {
+                              const ndk = await connectNDK();
+                              const ev = new NDKEvent(ndk, { id: selectedRide.id, kind: 1, pubkey: selectedRide.hexPubkey || selectedRide.pubkey });
+                              const encoded = ev.encode();
+                              await navigator.clipboard.writeText(`nostr:${encoded}`);
+                              alert('Nostr URI copied! Paste it in Primal, Coracle, or Amethyst.');
+                            } catch (e) {
+                              await navigator.clipboard.writeText(`nostr:${selectedRide.id}`);
+                              alert('Raw hex ID copied!');
+                            }
+                          }}
+                          className="btn btn-surface"
+                          style={{ padding: '6px 10px', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: '#00ccff', border: '1px solid rgba(0, 204, 255, 0.4)' }}
+                          title="Copy NIP-19 address"
+                        >
+                          <Copy size={14} /> Copy Note
+                        </button>
                       </div>
 
                       <div className="detail-card glass-panel" style={{ padding: '16px', borderRadius: '12px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.1)' }}>
-                        <div style={{ display: 'flex', gap: '12px', marginBottom: '16px' }}>
+                        <div 
+                          style={{ display: 'flex', gap: '12px', marginBottom: '16px', cursor: 'pointer', transition: 'opacity 0.2s' }} 
+                          className="profile-link-hover"
+                          onClick={() => loadAuthorProfile(selectedRide.hexPubkey || selectedRide.pubkey)}
+                        >
                           <div className="avatar-mini" style={{ width: '40px', height: '40px' }}></div>
                           <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
                             <span style={{ fontWeight: 'bold', color: '#fff' }}>{profiles[selectedRide.hexPubkey || selectedRide.pubkey]?.nip05 || profiles[selectedRide.hexPubkey || selectedRide.pubkey]?.name || `${selectedRide.pubkey.substring(0, 10)}...`}</span>
@@ -2450,7 +2473,7 @@ function App() {
             </div>
           </div>
           <p style={{ textAlign: 'center', fontSize: '16px', marginBottom: '32px' }}>Download the official Android APK to passively record maps, upload photos, and broadcast rides securely to any Nostr relay!</p>
-          <a href="https://github.com/Mnpezz/bikel/releases/download/v1.4.3/bikel-v1.4.3-release.apk" download className="btn btn-primary" style={{ width: '100%', padding: '16px', fontSize: '18px', justifyContent: 'center', background: '#00ffaa', color: '#000', fontWeight: '900', textTransform: 'uppercase', letterSpacing: '1px', boxShadow: '0 0 20px rgba(0,255,170,0.4)' }}>Download Android APK</a>
+          <a href="https://github.com/Mnpezz/bikel/releases/download/v1.5.0/bikel-v1.5.0-release.apk" download className="btn btn-primary" style={{ width: '100%', padding: '16px', fontSize: '18px', justifyContent: 'center', background: '#00ffaa', color: '#000', fontWeight: '900', textTransform: 'uppercase', letterSpacing: '1px', boxShadow: '0 0 20px rgba(0,255,170,0.4)' }}>Download Android APK</a>
           <div style={{ marginTop: '24px', fontSize: '12px', color: 'rgba(255,255,255,0.4)', textAlign: 'center' }}>Requires Android 10.0 or higher.</div>
         </div>
       </div>
