@@ -172,17 +172,16 @@ export class CashuProvider extends WalletProvider {
         this.ndk = ndk;
         this.mintUrls = Array.isArray(mintUrls) ? mintUrls : (mintUrls ? [mintUrls] : []);
         this.wallet = new NDKCashuWallet(ndk);
-        for (const url of this.mintUrls) {
-            console.log(`[Cashu] Adding mint: ${url}`);
-            this.wallet.addMint(url);
-        }
+        // In 0.7.1, we set the mints array directly
+        this.wallet.mints = this.mintUrls;
+        console.log(`[Cashu] Wallet initialized with ${this.mintUrls.length} mint(s).`);
     }
 
     async pay(bolt11) {
         // CashuWallet can pay a bolt11 if it has enough tokens
         try {
             console.log(`[Cashu] Melting tokens to pay bolt11...`);
-            await this.wallet.payInvoice(bolt11);
+            await this.wallet.lnPay(bolt11);
             return true;
         } catch (e) {
             console.error('[Cashu] Payout failed:', e.message);
@@ -192,7 +191,8 @@ export class CashuProvider extends WalletProvider {
 
     async getBalance() {
         try {
-            return await this.wallet.balance();
+            // In 0.7.1, 'balance' is an object { amount: number }
+            return this.wallet.balance?.amount || 0;
         } catch (e) {
             console.warn('[Cashu] Could not fetch balance:', e.message);
             return null;

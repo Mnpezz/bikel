@@ -1,3 +1,8 @@
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import NDK from '@nostr-dev-kit/ndk';
+import WebSocket from 'ws';
 import 'dotenv/config';
 import { createWalletProvider } from './wallet.mjs';
 
@@ -12,27 +17,44 @@ const RELAYS = ['wss://relay.damus.io', 'wss://relay.primal.net', 'wss://nos.lol
 const ndk = new NDK({ explicitRelayUrls: RELAYS });
 
 const WALLET_PROVIDER = process.env.WALLET_PROVIDER || 'coinos';
-const wallet = createWalletProvider({
+
+// 1. Primary Wallet (The main treasury)
+const primaryWallet = createWalletProvider({
     provider: WALLET_PROVIDER,
     apiKey: WALLET_PROVIDER === 'lnbits' ? process.env.LNBITS_API_KEY : process.env.COINOS_API_KEY,
     apiUrl: WALLET_PROVIDER === 'lnbits' ? process.env.LNBITS_URL : process.env.COINOS_API_URL,
     mintUrl: process.env.CASHU_MINT_URL
 }, ndk);
 
-async function getLiveBalance() {
-    // 1. Check for command line override
-    const args = process.argv.slice(2);
-    if (args.length > 0 && !isNaN(parseInt(args[0]))) {
-        return parseInt(args[0], 10);
+// 2. Nutzap Pocket (Always Cashu if enabled)
+let nutzapWallet = null;
+if (process.env.ENABLE_NUTZAPS === 'true') {
+    if (primaryWallet.canSendNutzap) {
+        nutzapWallet = primaryWallet;
+    } else {
+        nutzapWallet = createWalletProvider({
+            provider: 'cashu',
+            mintUrl: process.env.CASHU_MINT_URL
+        }, ndk);
+    }
+}
+
+async function getLiveBalance(wallet, name) {
+    // 1. Check for command line override (only for primary)
+    if (name === 'primary') {
+        const args = process.argv.slice(2);
+        if (args.length > 0 && !isNaN(parseInt(args[0]))) {
+            return parseInt(args[0]);
+        }
     }
 
-    // 2. Try to fetch from configured wallet provider
+    // 2. Try to fetch from provider
     try {
         return await wallet.getBalance();
     } catch (e) {
-        console.error(`⚠️  Failed to fetch balance from ${WALLET_PROVIDER}:`, e.message);
+        console.error(`⚠️  Failed to fetch ${name} balance:`, e.message);
     }
-    return null;
+    return 0;
 }
 
 async function fetchWithTimeout(filter, timeoutMs = 15000) {
@@ -53,14 +75,17 @@ async function runFinances() {
     console.log("       BIKEL BOT FINANCE OVERVIEW        ");
     console.log("=========================================\n");
 
-    // 1. Current Treasury Balance
-    console.log(`Reading ${WALLET_PROVIDER} balance...`);
-    const treasuryBalance = await getLiveBalance();
+    // 1. Current Treasury Balances
+    console.log(`Reading Primary Treasury (${WALLET_PROVIDER})...`);
+    const primaryBalance = await getLiveBalance(primaryWallet, 'primary');
     
-    if (treasuryBalance === null) {
-        console.log(`⚠️  Could not fetch live Treasury Balance from ${WALLET_PROVIDER}.`);
-        console.log("   (You can provide it manually: node bot_finances.mjs 3031)\n");
+    let secondaryBalance = 0;
+    if (nutzapWallet && nutzapWallet !== primaryWallet) {
+        console.log(`Reading eCash Pocket...`);
+        secondaryBalance = await getLiveBalance(nutzapWallet, 'nutzap');
     }
+
+    const totalTreasury = primaryBalance + secondaryBalance;
     
     // 2. Fetch completed payouts history
     let completedPayouts = 0;
@@ -166,7 +191,11 @@ async function runFinances() {
     const totalLiabilities = challengeLiabilities + sponsorshipLiabilities + huntLiabilities;
 
     console.log("\n--------- FINANCIAL SUMMARY ---------");
-    console.log(`🏦 Current Treasury Balance:  ${treasuryBalance !== null ? treasuryBalance.toLocaleString() : '????'} sats`);
+    console.log(`🏦 Primary Wallet (${WALLET_PROVIDER}): ${primaryBalance.toLocaleString()} sats`);
+    console.log(`💰 eCash Pocket (Cashu):     ${secondaryBalance.toLocaleString()} sats`);
+    console.log(`=====================================`);
+    console.log(`🌟 TOTAL TREASURY BALANCE:   ${totalTreasury.toLocaleString()} sats`);
+    console.log(`=====================================`);
     console.log(`💸 Total Past Payouts Sent:   ${completedPayouts.toLocaleString()} sats`);
     console.log(`📉 Total Pending Liabilities: ${totalLiabilities.toLocaleString()} sats (from ${activeEventCount} active items)`);
     console.log(`   ├─ Sponsored POIs:         ${sponsorshipLiabilities.toLocaleString()} sats`);
@@ -174,8 +203,7 @@ async function runFinances() {
     console.log(`   └─ Challenge Entry Pools:  ${challengeLiabilities.toLocaleString()} sats`);
     
     console.log("-------------------------------------");
-    const netProfit = (treasuryBalance !== null) ? (treasuryBalance - totalLiabilities) : null;
-    console.log(`💰 Potential Net Profit:      ${netProfit !== null ? netProfit.toLocaleString() : '????'} sats\n`);
+    console.log(`💰 Potential Net Profit:      ${(totalTreasury - totalLiabilities).toLocaleString()} sats\n`);
 
     console.log("(* Net profit assumes all outstanding sponsorship limits are hit.)\n");
     process.exit(0);
