@@ -5,6 +5,7 @@ import cron from 'node-cron';
 import dotenv from 'dotenv';
 import WebSocket from "ws";
 import fs from 'fs';
+import { createWalletProvider } from './wallet.mjs';
 global.WebSocket = WebSocket;
 
 dotenv.config();
@@ -12,6 +13,13 @@ dotenv.config();
 // ─────────────────────────────────────────────
 // Config
 // ─────────────────────────────────────────────
+const WALLET_PROVIDER = process.env.WALLET_PROVIDER || 'coinos';
+const ENABLE_NUTZAPS = process.env.ENABLE_NUTZAPS === 'true';
+
+let primaryWallet; // Main treasury (Lightning or eCash)
+let nutzapWallet;  // Dedicated eCash pocket for NIP-61
+let nutzapMonitor; // Autonomous eCash collector
+
 const RELAYS = [
     'ws://127.0.0.1:7777', // Local bikel.ink relay (internal strfry)
     'wss://relay.bikel.ink', // External bikel.ink
@@ -22,8 +30,6 @@ const RELAYS = [
     'wss://purplepag.es'
 ];
 
-const COINOS_API_URL = 'https://coinos.io/api';
-const COINOS_API_KEY = process.env.COINOS_API_KEY;
 const BOT_NSEC = process.env.BOT_NSEC;
 const TREASURY_LUD16 = process.env.TREASURY_LUD16; // e.g. "bikel@coinos.io"
 const PLATFORM_FEE_PCT = 0.05; // 5% markup for platform
@@ -445,6 +451,40 @@ async function initializeNDK() {
     }
     const ndk = new NDK({ explicitRelayUrls: RELAYS, signer });
 
+    // 1. Initialize Primary Wallet (Main Pocket)
+    primaryWallet = createWalletProvider({
+        provider: WALLET_PROVIDER,
+        apiKey: WALLET_PROVIDER === 'lnbits' ? process.env.LNBITS_API_KEY : process.env.COINOS_API_KEY,
+        apiUrl: WALLET_PROVIDER === 'lnbits' ? process.env.LNBITS_URL : process.env.COINOS_API_URL,
+        mintUrl: process.env.CASHU_MINT_URL
+    }, ndk);
+
+    // 2. Initialize secondary eCash pocket if needed
+    if (ENABLE_NUTZAPS) {
+        if (primaryWallet.canSendNutzap) {
+            nutzapWallet = primaryWallet; // Already an eCash-capable wallet
+        } else {
+            console.log('[Bot] Initializing secondary eCash pocket for Nutzaps...');
+            nutzapWallet = createWalletProvider({
+                provider: 'cashu',
+                mintUrl: process.env.CASHU_MINT_URL
+            }, ndk);
+        }
+
+        // Initialize Autonomous Nutzap Collector
+        if (nutzapWallet.wallet) {
+            console.log('[Bot] Starting Nutzap Monitor...');
+            const botUser = await ndk.signer?.user();
+            const { NDKNutzapMonitor } = await import('@nostr-dev-kit/ndk-wallet');
+            nutzapMonitor = new NDKNutzapMonitor(ndk, botUser);
+            nutzapMonitor.wallet = nutzapWallet.wallet;
+            await nutzapMonitor.start();
+
+            // Announce support to the world
+            await announceBotCapabilities(ndk, nutzapWallet.mintUrls);
+        }
+    }
+
     // Cache for checkpoints to avoid relay spam in real-time
     ndk.activeCheckpointsCache = { data: [], lastFetch: 0 };
 
@@ -486,73 +526,28 @@ async function fetchWithTimeout(ndk, filter, timeoutMs = 20000) {
 }
 
 // ─────────────────────────────────────────────
-// Coinos — pay a bolt11 invoice via POST /payments
+// Unified Wallet — pay a bolt11 invoice
 // ─────────────────────────────────────────────
 async function payLightningInvoice(invoice) {
-    if (!COINOS_API_KEY) {
-        console.error('[Bot] COINOS_API_KEY missing. Cannot process payout.');
-        return false;
-    }
-    try {
-        console.log(`[Bot] Paying invoice: ${invoice.substring(0, 20)}...`);
-        const response = await axios.post(
-            `${COINOS_API_URL}/payments`,
-            { payreq: invoice },
-            { headers: { 'Authorization': `Bearer ${COINOS_API_KEY}`, 'content-type': 'application/json' } }
-        );
-        console.log('[Bot] Payout successful!', response.data);
-        return true;
-    } catch (error) {
-        console.error('[Bot] Payout failed:', error?.response?.data || error.message);
-        return false;
-    }
+    return await primaryWallet.pay(invoice);
 }
 
 // ─────────────────────────────────────────────
-// Coinos payment verification
+// Wallet payment verification
 // Checks that an incoming payment of the right amount arrived around the
-// time of the RSVP. Uses Coinos GET /payments with start/end query params
-// to narrow the window server-side.
+// time of the RSVP.
 //
-// Notes on the Coinos API:
-// - Amounts are in SATS (not msats)
-// - Positive amount = incoming, negative = outgoing
-// - No dedicated "memo" field exposed — we match by amount + time window only
-// - start/end query params are Unix timestamps
-//
-// FAILS OPEN: if Coinos is unreachable we accept the RSVP — the app already
+// FAILS OPEN: if the wallet API is unreachable we accept the RSVP — the app already
 // verified the zap succeeded before publishing the RSVP, so this is a
 // second-layer sanity check, not the primary gate.
 // ─────────────────────────────────────────────
 
 /**
- * Fetch Coinos incoming payments within a time window.
- * Uses start/end query params to avoid loading the full payment history.
- */
-async function fetchCoinosPaymentsInWindow(startTs, endTs) {
-    if (!COINOS_API_KEY) return null; // null = API key missing, fail open
-    try {
-        const response = await axios.get(
-            `${COINOS_API_URL}/payments`,
-            {
-                headers: { 'Authorization': `Bearer ${COINOS_API_KEY}`, 'content-type': 'application/json' },
-                params: { start: startTs, end: endTs, limit: 100 }
-            }
-        );
-        const payments = Array.isArray(response.data) ? response.data : (response.data?.payments || []);
-        return payments;
-    } catch (e) {
-        console.warn('[Bot] Could not fetch Coinos payments:', e.message);
-        return null; // null = fetch failed, fail open
-    }
-}
-
-/**
- * Verifies that a contest entry fee arrived in the Coinos account.
- * Matches: incoming payment (amount > 0) with amount >= feeSats
+ * Verifies that a contest entry fee arrived in the wallet.
+ * Matches: incoming payment with amount >= feeSats
  * within a ±2 hour window around the RSVP timestamp.
  *
- * Fails open if: fee is 0, Coinos API is unavailable, or API key is missing.
+ * Fails open if: fee is 0 or Wallet API is unavailable.
  */
 async function verifyContestPayment(contestId, feeSats, rsvpCreatedAt) {
     if (feeSats <= 0) return true; // Free contest — no payment needed
@@ -560,29 +555,26 @@ async function verifyContestPayment(contestId, feeSats, rsvpCreatedAt) {
     // Wide window: 1 hour before RSVP, 24 hours after (covers delayed NWC payments
     // and cases where the payment arrived before the RSVP was published)
     const windowSecs = 3600;
-    const startTs = rsvpCreatedAt - windowSecs;
-    const endTs = rsvpCreatedAt + (windowSecs * 24);
+    const startTs = (rsvpCreatedAt - windowSecs) * 1000;
+    const endTs = (rsvpCreatedAt + (windowSecs * 24)) * 1000;
 
-    // Coinos API uses milliseconds — convert from Unix seconds
-    const payments = await fetchCoinosPaymentsInWindow(startTs * 1000, endTs * 1000);
+    const payments = await primaryWallet.getPayments(startTs, endTs);
 
     // Fail open if API unavailable
     if (payments === null) {
-        console.log(`[Bot]   ⚠️ Coinos API unavailable — cannot verify payment, accepting RSVP (fail open)`);
+        console.log(`[Bot]   ⚠️ Wallet API unavailable — cannot verify payment, accepting RSVP (fail open)`);
         return true;
     }
 
     if (payments.length === 0) {
-        console.log(`[Bot]   ⚠️ No Coinos payments found in window [${new Date(startTs * 1000).toISOString()} → ${new Date(endTs * 1000).toISOString()}] — accepting RSVP (fail open)`);
+        console.log(`[Bot]   ⚠️ No payments found in window — accepting RSVP (fail open)`);
         return true;
     }
 
     // Find an incoming payment of at least feeSats
-    // Coinos amounts are in sats. Positive = incoming, negative = outgoing.
     const match = payments.find(p => {
-        const amount = typeof p.amount === 'number' ? p.amount : parseInt(p.amount, 10);
-        if (isNaN(amount) || amount <= 0) return false; // outgoing or invalid
-        if (amount < feeSats) return false;
+        if (isNaN(p.amount) || p.amount <= 0) return false; // outgoing or invalid
+        if (p.amount < feeSats) return false;
         return true;
     });
 
@@ -596,7 +588,7 @@ async function verifyContestPayment(contestId, feeSats, rsvpCreatedAt) {
 }
 
 // ─────────────────────────────────────────────
-// Payout helper — fetch lud16, get invoice, pay
+// Payout helper — Hybrid Nutzap/Lightning
 // ─────────────────────────────────────────────
 async function payoutWinner(ndk, pubkey, splitSats, eventId, eventKind = 33402) {
     const botUser = await ndk.signer?.user();
@@ -605,6 +597,24 @@ async function payoutWinner(ndk, pubkey, splitSats, eventId, eventKind = 33402) 
         return true;
     }
 
+    // 1. Try Nutzap (NIP-61) if enabled
+    if (ENABLE_NUTZAPS && nutzapWallet) {
+        try {
+            // Check for Nutzap Info (Kind 10019)
+            const nutzapInfo = await ndk.fetchEvent({ kinds: [10019], authors: [pubkey] });
+            if (nutzapInfo) {
+                const success = await nutzapWallet.sendNutzap(pubkey, splitSats, eventId);
+                if (success) {
+                    console.log(`[Bot] ✅ Nutzap payout successful for ${pubkey.substring(0, 8)}`);
+                    return true;
+                }
+            }
+        } catch (e) {
+            console.warn(`[Bot] Nutzap attempt failed, falling back to Lightning:`, e.message);
+        }
+    }
+
+    // 2. Fallback to Lightning (LUD-16 / Invoice) via Primary Wallet
     const splitMsats = splitSats * 1000;
     const userObj = ndk.getUser({ pubkey });
     let profile;
@@ -657,7 +667,7 @@ async function payoutWinner(ndk, pubkey, splitSats, eventId, eventKind = 33402) 
         const pr = invoiceRes.data.pr;
         if (!pr) return false;
 
-        // 4. Pay Invoice
+        // 4. Pay Invoice via Primary Wallet
         const success = await payLightningInvoice(pr);
         if (success && TREASURY_LUD16 && PLATFORM_FEE_PCT > 0) {
             const feeSats = Math.max(1, Math.floor(splitSats * PLATFORM_FEE_PCT));
@@ -695,6 +705,33 @@ async function payoutByLud16(lud16, sats) {
     } catch (err) {
         console.error(`[Bot] Failed payout to ${lud16}:`, err.message);
         return false;
+    }
+}
+
+// ─────────────────────────────────────────────
+// Bot Identity — Announce Nutzap Info (Kind 10019)
+// Tells everyone which mints the bot trusts for eCash
+// ─────────────────────────────────────────────
+async function announceBotCapabilities(ndk, mintUrls = []) {
+    if (!ndk.signer || mintUrls.length === 0) return;
+    try {
+        const botUser = await ndk.signer.user();
+        console.log(`[Bot] Announcing Nutzap support for ${mintUrls.length} mint(s)...`);
+        
+        const announce = new NDKEvent(ndk);
+        announce.kind = 10019;
+        announce.content = "";
+        announce.tags = [
+            // List all trusted mints
+            ...mintUrls.map(url => ['mint', url]),
+            // Add a client tag for Bikel
+            ['client', 'bikel']
+        ];
+        
+        await announce.publish();
+        console.log(`[Bot] ✅ Nutzap info published: ${announce.id}`);
+    } catch (err) {
+        console.warn('[Bot] Failed to announce Nutzap support:', err.message);
     }
 }
 

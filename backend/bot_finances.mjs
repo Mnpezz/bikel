@@ -1,9 +1,5 @@
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import NDK from '@nostr-dev-kit/ndk';
-import WebSocket from 'ws';
 import 'dotenv/config';
+import { createWalletProvider } from './wallet.mjs';
 
 global.WebSocket = WebSocket;
 
@@ -12,31 +8,29 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PAYOUTS_FILE = path.join(__dirname, 'checkpoint_payouts.json');
 
-const COINOS_API_URL = 'https://coinos.io/api';
 const RELAYS = ['wss://relay.damus.io', 'wss://relay.primal.net', 'wss://nos.lol'];
 const ndk = new NDK({ explicitRelayUrls: RELAYS });
 
-async function getCoinosBalance() {
+const WALLET_PROVIDER = process.env.WALLET_PROVIDER || 'coinos';
+const wallet = createWalletProvider({
+    provider: WALLET_PROVIDER,
+    apiKey: WALLET_PROVIDER === 'lnbits' ? process.env.LNBITS_API_KEY : process.env.COINOS_API_KEY,
+    apiUrl: WALLET_PROVIDER === 'lnbits' ? process.env.LNBITS_URL : process.env.COINOS_API_URL,
+    mintUrl: process.env.CASHU_MINT_URL
+}, ndk);
+
+async function getLiveBalance() {
     // 1. Check for command line override
     const args = process.argv.slice(2);
     if (args.length > 0 && !isNaN(parseInt(args[0]))) {
         return parseInt(args[0], 10);
     }
 
-    // 2. Try to fetch from Coinos API using .env token
-    const token = process.env.COINOS_API_KEY;
-    if (token) {
-        try {
-            const resp = await fetch(`${COINOS_API_URL}/me`, {
-                headers: { 'Authorization': `Bearer ${token}` }
-            });
-            const data = await resp.json();
-            if (data && typeof data.balance === 'number') {
-                return data.balance;
-            }
-        } catch (e) {
-            console.error("⚠️  Failed to fetch balance from Coinos API:", e.message);
-        }
+    // 2. Try to fetch from configured wallet provider
+    try {
+        return await wallet.getBalance();
+    } catch (e) {
+        console.error(`⚠️  Failed to fetch balance from ${WALLET_PROVIDER}:`, e.message);
     }
     return null;
 }
@@ -60,11 +54,11 @@ async function runFinances() {
     console.log("=========================================\n");
 
     // 1. Current Treasury Balance
-    console.log("Reading input balance...");
-    const treasuryBalance = await getCoinosBalance();
+    console.log(`Reading ${WALLET_PROVIDER} balance...`);
+    const treasuryBalance = await getLiveBalance();
     
     if (treasuryBalance === null) {
-        console.log("⚠️  Could not fetch live Treasury Balance from Coinos API.");
+        console.log(`⚠️  Could not fetch live Treasury Balance from ${WALLET_PROVIDER}.`);
         console.log("   (You can provide it manually: node bot_finances.mjs 3031)\n");
     }
     

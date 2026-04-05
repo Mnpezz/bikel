@@ -1,6 +1,16 @@
 # Bikel 🚲⚡
 **Bikel** is an open-source, decentralized mapping and geolocation ecosystem natively built on the Nostr network. It allows cyclists and athletes to passively track rides, overlay photos, organize alleycat races, and distribute lightning-fast Bitcoin micro-payments—all entirely free from traditional proprietary fitness trackers.
-Because Bikel uses Nostr and `NIP-52` Time-Based events, your location data belongs permanently to your cryptographic identity. You are free to take your maps to any client or relay you choose## 🏗️ Architecture
+Because Bikel uses Nostr and `NIP-52` Time-Based events, your location data belongs permanently to your cryptographic identity. You are free to take your maps to any client or relay you choose.
+
+---
+## 📸 Visual Overview (v1.5.0)
+
+| Mobile Feed (MPH) | POI Map Rewards | Scavenger Hunts | Drafts | Settings |
+|:---:|:---:|:---:|:---:|:---:|
+| ![Feed Placeholder](assets/screenshots/mobile_feed.png) | ![POI Placeholder](assets/screenshots/poi_overlay.png) | ![Hunts Placeholder](assets/screenshots/best_feed.png) | ![Drafts Placeholder](assets/screenshots/drafts.png) | ![Settings Placeholder](assets/screenshots/settings.png) |
+
+---
+## 🏗️ Architecture
 The Bikel platform is divided into four independent components that communicate symbiotically over Nostr websocket relays:
 
 1. **`apk/` (The Mobile Tracker)**
