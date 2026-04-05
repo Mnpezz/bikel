@@ -1,6 +1,7 @@
 import { useEffect, useState, useMemo, useRef } from 'react';
-import { MapContainer, TileLayer, CircleMarker, Popup, Polyline, useMap, LayerGroup } from 'react-leaflet';
-import { Bike, Activity, CalendarPlus, Calendar, Zap, LogIn, Info, HelpCircle, Smartphone, X, Clock, Route, CheckCircle, RefreshCw, Map as MapIcon, MapPin, ChevronUp, ChevronDown, Users, Database, Download, BarChart2, Trash2, Gauge, ArrowLeft, Trophy, Copy } from 'lucide-react';
+import { MapContainer, TileLayer, CircleMarker, Popup, Polyline, useMap, useMapEvents, LayerGroup, Marker } from 'react-leaflet';
+import L from 'leaflet';
+import { Bike, Activity, CalendarPlus, Calendar, Zap, LogIn, Info, HelpCircle, Smartphone, X, Clock, Route, CheckCircle, RefreshCw, Map as MapIcon, MapPin, ChevronUp, ChevronDown, Users, Database, Download, BarChart2, Trash2, Gauge, ArrowLeft, Trophy, Copy, AudioWaveform, Droplet, Wrench } from 'lucide-react';
 import { formatDistanceToNow, format, addHours } from 'date-fns';
 import { connectNDK, fetchRecentRides, fetchUserRides, fetchScheduledRides, fetchContests, fetchCheckpoints, loginNip07, publishRSVP, publishContestRSVP, connectNWC, zapRideEvent, fetchComments, publishComment, fetchDMs, sendDM, deleteRide, fetchAllRidesInRange, prepareCheckpointEvent, prepareContestEvent, fetchUserRevenue, ESCROW_PUBKEY, fetchApprovedBots, fetchEventsWithTimeout } from './lib/nostr';
 import type { RideEvent, ScheduledRideEvent, RideComment, DMessage, ContestEvent, CheckpointEvent, ApprovedBot } from './lib/nostr';
@@ -30,6 +31,8 @@ interface GroupedCheckpoint {
 }
 
 // ── Helpers ────────────────────────────────────────────
+import { nip19 } from 'nostr-tools';
+
 function snapToGrid(lat: number, lng: number, precision = 4): string {
   return `${lat.toFixed(precision)},${lng.toFixed(precision)}`;
 }
@@ -48,6 +51,22 @@ function buildHeatmap(rides: RideEvent[]): GridCell[] {
     }
   }
   return Array.from(grid.values()).filter(c => c.count > 0);
+}
+
+/**
+ * Returns a display name for a pubkey (hex).
+ * Priority: profiles[hex].name -> npub1... (truncated)
+ */
+function getDisplayName(hex: string | undefined, profiles: Record<string, any>): string {
+  if (!hex) return "Unknown";
+  const p = profiles[hex];
+  const name = p?.name || p?.display_name || p?.nip05;
+  if (name) return name;
+  try {
+    return nip19.npubEncode(hex).substring(0, 12) + "...";
+  } catch (e) {
+    return hex.substring(0, 8);
+  }
 }
 
 function buildCorridors(rides: RideEvent[]): CorridorSegment[] {
@@ -99,6 +118,109 @@ function formatElevation(elevationStr: string | undefined, isMetric: boolean) {
   return isMetric ? `${Math.round(val * 0.3048)} m` : `${Math.round(val)} ft`;
 }
 
+// ── OSMPoisLayer Component ───────────────────────────
+function OSMPoisLayer({ showRacks, showWater, showRepair, onPoisFetched, existingCache, onZoomChange, setIsLoading }: {
+  showRacks: boolean,
+  showWater: boolean,
+  showRepair: boolean,
+  onPoisFetched: (pois: any[]) => void,
+  existingCache: React.MutableRefObject<Set<string>>,
+  onZoomChange: (zoom: number) => void,
+  setIsLoading: (loading: boolean) => void
+}) {
+  const fetchTimer = useRef<NodeJS.Timeout | null>(null);
+
+  const map = useMapEvents({
+    moveend: () => {
+      onZoomChange(map.getZoom());
+      if (showRacks || showWater || showRepair) debouncedFetch();
+    },
+    zoomend: () => {
+      onZoomChange(map.getZoom());
+      if (showRacks || showWater || showRepair) debouncedFetch();
+    }
+  });
+
+  // Fetch immediately when toggled ON
+  useEffect(() => {
+    if (showRacks || showWater || showRepair) {
+      debouncedFetch();
+    }
+  }, [showRacks, showWater, showRepair]);
+
+  const debouncedFetch = () => {
+    if (fetchTimer.current) clearTimeout(fetchTimer.current);
+    fetchTimer.current = setTimeout(fetchPois, 1000); // 1s debounce
+  };
+
+  const fetchPois = async () => {
+    const zoom = map.getZoom();
+    if (zoom < 14) return; // Don't fetch if too zoomed out
+
+    const bounds = map.getBounds();
+    const bbox = `${bounds.getSouth()},${bounds.getWest()},${bounds.getNorth()},${bounds.getEast()}`;
+
+    const types = [];
+    if (showRacks) types.push('node["amenity"="bicycle_parking"]');
+    if (showWater) types.push('node["amenity"="drinking_water"]');
+    if (showRepair) types.push('node["amenity"="bicycle_repair_station"]');
+
+    if (types.length === 0) return;
+
+    const query = `
+      [out:json][timeout:25];
+      (
+        ${types.map(t => `${t}(${bbox});`).join('\n')}
+      );
+      out body;
+    `;
+
+    try {
+      setIsLoading(true);
+      const response = await fetch("https://overpass-api.de/api/interpreter", {
+        method: "POST",
+        body: query
+      });
+
+      if (!response.ok) {
+        if (response.status === 429) console.warn("Overpass API: Rate limited (429). Waiting...");
+        else console.error(`Overpass API error: ${response.status}`);
+        return;
+      }
+
+      const data = await response.json();
+      if (!data.elements) return;
+
+      const newPois = data.elements
+        .filter((el: any) => el.type === 'node' && !existingCache.current.has(el.id.toString()))
+        .map((el: any) => {
+          existingCache.current.add(el.id.toString());
+          return {
+            id: el.id,
+            lat: el.lat,
+            lng: el.lon,
+            type: el.tags.amenity,
+            tags: el.tags
+          };
+        });
+
+      if (newPois.length > 0) {
+        onPoisFetched(newPois);
+      }
+    } catch (e) {
+      console.error("Failed to fetch OSM POIs:", e);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (showRacks || showWater || showRepair) fetchPois();
+  }, [showRacks, showWater, showRepair]);
+
+  return null;
+}
+
 // ── Main App ───────────────────────────────────────────
 function App() {
   const [isConnected, setIsConnected] = useState(false);
@@ -119,6 +241,7 @@ function App() {
   const [viewMode, setViewMode] = useState<'global' | 'personal' | 'scheduled' | 'best' | 'author' | 'data'>('global');
   const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
   const [profiles, setProfiles] = useState<Record<string, any>>({});
+  const fetchingProfileKeys = useRef<Set<string>>(new Set());
 
   const [showNWCModal, setShowNWCModal] = useState(false);
   const [nwcURI, setNwcURI] = useState('');
@@ -204,6 +327,19 @@ function App() {
   const [challengeStart, setChallengeStart] = useState(format(new Date(), "yyyy-MM-dd'T'HH:mm"));
   const [challengeDuration, setChallengeDuration] = useState('7');
   const [isPublishingChallenge, setIsPublishingChallenge] = useState(false);
+
+  // OSM POIs
+  const [isMapFeaturesOpen, setIsMapFeaturesOpen] = useState(false);
+  const [isOsmLoading, setIsOsmLoading] = useState(false);
+  const [showBikeRacks, setShowBikeRacks] = useState(false);
+  const [showWaterFountains, setShowWaterFountains] = useState(false);
+  const [showRepairStations, setShowRepairStations] = useState(false);
+  const [showGlobalRoutes, setShowGlobalRoutes] = useState(true);
+  const [showMapCheckpoints, setShowMapCheckpoints] = useState(true);
+
+  const [osmPois, setOsmPois] = useState<any[]>([]);
+  const osmPoisCache = useRef<Set<string>>(new Set());
+  const [currentZoom, setCurrentZoom] = useState(13); // Default zoom
 
   // Confidence-filtered global feed (>= 0.7, or no confidence tag = include)
   const filteredGlobalRides = useMemo(() => {
@@ -363,8 +499,13 @@ function App() {
   }, [timeFilter]);
 
   const loadAuthorProfiles = async (pubkeys: string[]) => {
-    const missingKeys = Array.from(new Set(pubkeys)).filter(pk => !profiles[pk]);
+    // Filter out keys we already have OR are CURRENTLY FETCHING
+    const missingKeys = Array.from(new Set(pubkeys)).filter(pk => !profiles[pk] && !fetchingProfileKeys.current.has(pk));
     if (missingKeys.length === 0) return;
+
+    // Mark as fetching immediately
+    missingKeys.forEach(pk => fetchingProfileKeys.current.add(pk));
+
     try {
       const ndk = await connectNDK();
       const filter = { kinds: [0 as any], authors: missingKeys };
@@ -376,6 +517,12 @@ function App() {
       setProfiles(prev => ({ ...prev, ...newProfiles }));
     } catch (e) {
       console.error("Failed to load web author profiles:", e);
+    } finally {
+      // Clear fetching tracker for these keys after a delay to allow React to re-render with new profiles.
+      // If a key is still missing after this, it will be retried on the next load.
+      setTimeout(() => {
+        missingKeys.forEach(pk => fetchingProfileKeys.current.delete(pk));
+      }, 2000);
     }
   };
 
@@ -727,6 +874,59 @@ function App() {
           ) : (
             <button className="btn btn-primary" style={{ color: '#000', display: 'flex', alignItems: 'center', gap: '6px' }} onClick={handleLogin}><LogIn size={16} /> Sign In</button>
           )}
+          <div className="map-features-dropdown" style={{ marginLeft: '8px', position: 'relative' }}>
+            <button
+              className="btn btn-surface"
+              style={{ padding: '8px', color: (showBikeRacks || showWaterFountains || showRepairStations) ? '#00ccff' : '#555', display: 'flex', alignItems: 'center', gap: '6px' }}
+              onClick={() => setIsMapFeaturesOpen(!isMapFeaturesOpen)}
+              title="Map Features & Infrastructure"
+            >
+              <MapIcon size={20} />
+              <ChevronDown size={14} style={{ transform: isMapFeaturesOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }} />
+            </button>
+
+            {isMapFeaturesOpen && (
+              <div className="dropdown-menu animate-fade-in glass-panel" style={{ position: 'absolute', top: '100%', right: 0, marginTop: '8px', width: '220px', zIndex: 3000, padding: '12px' }}>
+                <div style={{ fontSize: '11px', color: '#666', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '12px', fontWeight: 'bold' }}>Map Layers</div>
+
+                <div className="dropdown-item" onClick={() => setShowGlobalRoutes(!showGlobalRoutes)} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px', borderRadius: '8px', cursor: 'pointer', background: showGlobalRoutes ? 'rgba(0,255,170,0.1)' : 'transparent', marginBottom: '4px' }}>
+                  <Route size={18} color={showGlobalRoutes ? '#00ffaa' : '#555'} />
+                  <span style={{ flex: 1, fontSize: '13px', color: showGlobalRoutes ? '#fff' : '#888' }}>Global Routes</span>
+                  <div className={`mini-toggle ${showGlobalRoutes ? 'active' : ''}`}></div>
+                </div>
+
+                <div className="dropdown-item" onClick={() => setShowMapCheckpoints(!showMapCheckpoints)} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px', borderRadius: '8px', cursor: 'pointer', background: showMapCheckpoints ? 'rgba(168, 85, 247, 0.1)' : 'transparent', marginBottom: '12px' }}>
+                  <MapPin size={18} color={showMapCheckpoints ? '#a855f7' : '#555'} />
+                  <span style={{ flex: 1, fontSize: '13px', color: showMapCheckpoints ? '#fff' : '#888' }}>Campaign POIs</span>
+                  <div className={`mini-toggle ${showMapCheckpoints ? 'active' : ''}`}></div>
+                </div>
+
+                <div style={{ fontSize: '11px', color: '#666', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '12px', fontWeight: 'bold', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '12px' }}>Bike Infrastructure</div>
+
+                <div className="dropdown-item" onClick={() => setShowBikeRacks(!showBikeRacks)} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px', borderRadius: '8px', cursor: 'pointer', background: showBikeRacks ? 'rgba(0, 204, 255, 0.1)' : 'transparent', marginBottom: '4px' }}>
+                  <AudioWaveform size={18} color={showBikeRacks ? '#00ccff' : '#555'} />
+                  <span style={{ flex: 1, fontSize: '13px', color: showBikeRacks ? '#fff' : '#888' }}>Bike Racks</span>
+                  <div className={`mini-toggle ${showBikeRacks ? 'active' : ''}`}></div>
+                </div>
+
+                <div className="dropdown-item" onClick={() => setShowWaterFountains(!showWaterFountains)} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px', borderRadius: '8px', cursor: 'pointer', background: showWaterFountains ? 'rgba(59, 130, 246, 0.1)' : 'transparent', marginBottom: '4px' }}>
+                  <Droplet size={18} color={showWaterFountains ? '#3b82f6' : '#555'} />
+                  <span style={{ flex: 1, fontSize: '13px', color: showWaterFountains ? '#fff' : '#888' }}>Water Fountains</span>
+                  <div className={`mini-toggle ${showWaterFountains ? 'active' : ''}`}></div>
+                </div>
+
+                <div className="dropdown-item" onClick={() => setShowRepairStations(!showRepairStations)} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px', borderRadius: '8px', cursor: 'pointer', background: showRepairStations ? 'rgba(245, 158, 11, 0.1)' : 'transparent' }}>
+                  <Wrench size={18} color={showRepairStations ? '#f59e0b' : '#555'} />
+                  <span style={{ flex: 1, fontSize: '13px', color: showRepairStations ? '#fff' : '#888' }}>Repair Stations</span>
+                  <div className={`mini-toggle ${showRepairStations ? 'active' : ''}`}></div>
+                </div>
+
+                <div style={{ fontSize: '10px', color: '#444', marginTop: '12px', textAlign: 'center', fontStyle: 'italic' }}>
+                  Data source: OpenStreetMap
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </header>
 
@@ -909,7 +1109,9 @@ function App() {
 
               {!selectedRide && viewMode === 'author' && (
                 <div className="widget glass-panel animate-fade-in" style={{ animationDelay: '0.05s', marginBottom: '16px', borderColor: 'rgba(0, 204, 255, 0.3)' }}>
-                  <h2 className="widget-title" style={{ color: '#00ccff' }}><Activity size={16} /> Rider Stats: {viewingAuthor?.substring(0, 8)}</h2>
+                  <h2 className="widget-title" style={{ color: '#00ccff' }}>
+                    <Activity size={16} /> Rider Stats: {getDisplayName(viewingAuthor!, profiles)}
+                  </h2>
                   <div className="global-stats" style={{ gridTemplateColumns: 'repeat(2, 1fr)', gap: '10px' }}>
                     <div className="stat-box" style={{ background: 'rgba(0, 204, 255, 0.05)' }}>
                       <div className="stat-value" style={{ color: '#fff' }}>{authorRides.length}</div>
@@ -955,7 +1157,7 @@ function App() {
                     <h2 className="widget-title" style={{ margin: 0 }}>
                       {viewMode === 'scheduled' ? <><CalendarPlus size={16} /> Upcoming Group Rides</> :
                         viewMode === 'best' ? <><Trophy size={16} color="#eab308" /> BEST: Campaigns & Challenges</> :
-                          viewMode === 'author' ? <><Activity size={16} /> Rides by {viewingAuthor?.substring(0, 10)}...</> :
+                          viewMode === 'author' ? <><Activity size={16} /> Rides by {getDisplayName(viewingAuthor!, profiles)}</> :
                             <><Activity size={16} /> {viewMode === 'personal' ? 'My Recent Rides' : 'Recent Public Rides'}</>}
                     </h2>
                     <button className="btn btn-surface" style={{ padding: '4px 8px', display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => loadFeeds()} title="Refresh Feeds"><RefreshCw size={14} /></button>
@@ -996,8 +1198,8 @@ function App() {
                       </div>
 
                       <div className="detail-card glass-panel" style={{ padding: '16px', borderRadius: '12px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.1)' }}>
-                        <div 
-                          style={{ display: 'flex', gap: '12px', marginBottom: '16px', cursor: 'pointer', transition: 'opacity 0.2s' }} 
+                        <div
+                          style={{ display: 'flex', gap: '12px', marginBottom: '16px', cursor: 'pointer', transition: 'opacity 0.2s' }}
                           className="profile-link-hover"
                           onClick={() => loadAuthorProfile(selectedRide.hexPubkey || selectedRide.pubkey)}
                         >
@@ -1387,7 +1589,9 @@ function App() {
                             <div className="ride-pubkey" title={ride.pubkey}>
                               <div className="avatar-mini"></div>
                               <div style={{ display: 'flex', flexDirection: 'column' }}>
-                                <span onClick={(e) => { e.stopPropagation(); loadAuthorProfile(ride.pubkey); }} style={{ cursor: 'pointer' }}>{profiles[ride.hexPubkey || ride.pubkey]?.nip05 || profiles[ride.hexPubkey || ride.pubkey]?.name || `${ride.pubkey.substring(0, 10)}...`}</span>
+                                <span onClick={(e) => { e.stopPropagation(); loadAuthorProfile(ride.pubkey); }} style={{ cursor: 'pointer' }}>
+                                  {getDisplayName(ride.hexPubkey || ride.pubkey, profiles)}
+                                </span>
                                 {ride.client && ride.client !== 'bikel' && (
                                   <span style={{ color: '#00ccff', fontSize: '10px', fontWeight: 'bold' }}>via {ride.client}</span>
                                 )}
@@ -1455,20 +1659,25 @@ function App() {
         <section className="map-wrapper animate-fade-in" style={{ animationDelay: '0.3s' }}>
           <MapContainer center={[51.505, -0.09]} zoom={13} scrollWheelZoom={true} zoomControl={false}>
             <TileLayer attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>' url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png" />
-            {!showHeatmap && (viewMode === 'personal' ? myRides : filteredGlobalRides).map(ride => {
+            {showGlobalRoutes && !showHeatmap && (viewMode === 'personal' ? myRides : filteredGlobalRides).map(ride => {
               if (ride.route.length === 0) return null;
               const startCoords: [number, number] = [ride.route[0][0], ride.route[0][1]];
               const { color: rideColor, opacity: rideOpacity } = rideAgeColor(ride.time);
               return (
                 <LayerGroup key={ride.id}>
                   <CircleMarker center={startCoords} radius={5} pathOptions={{ color: rideColor, fillColor: rideColor, fillOpacity: rideOpacity + 0.1, weight: 2 }} eventHandlers={{ click: () => setSelectedRide(ride) }}>
-                    <Popup><div style={{ color: '#000', fontSize: '13px' }}><strong>{ride.pubkey.substring(0, 12)}...</strong><br />{formatDistance(ride, isMetric)} in {ride.duration}</div></Popup>
+                    <Popup>
+                      <div style={{ color: '#000', fontSize: '13px' }}>
+                        <strong>{getDisplayName(ride.hexPubkey || ride.pubkey, profiles)}</strong>
+                        <br />{formatDistance(ride, isMetric)} in {ride.duration}
+                      </div>
+                    </Popup>
                   </CircleMarker>
                   <Polyline positions={ride.route as [number, number][]} pathOptions={{ color: rideColor, weight: 3, opacity: rideOpacity }} eventHandlers={{ click: () => setSelectedRide(ride) }} />
                 </LayerGroup>
               );
             })}
-            {showHeatmap && heatmapCells.map((cell, i) => (
+            {showGlobalRoutes && showHeatmap && heatmapCells.map((cell, i) => (
               <CircleMarker key={i} center={[cell.lat, cell.lng]} radius={Math.min(3 + cell.count * 1.5, 14)} pathOptions={{ color: heatColor(cell.count), fillColor: heatColor(cell.count), fillOpacity: 0.5, weight: 0 }}>
                 <Popup><div style={{ color: '#000', fontSize: '12px' }}><strong>{cell.count} passes</strong><br />{cell.riders.size} unique rider{cell.riders.size !== 1 ? 's' : ''}</div></Popup>
               </CircleMarker>
@@ -1488,7 +1697,7 @@ function App() {
             )}
 
             {/* Sponsored Checkpoints (POIs) */}
-            {groupedCheckpoints.map(group => (
+            {showMapCheckpoints && groupedCheckpoints.map(group => (
               <CircleMarker
                 key={group.id}
                 ref={(ref) => {
@@ -1573,6 +1782,69 @@ function App() {
                 setPickingMode(null);
               }} />
             )}
+            {isOsmLoading && (
+              <div style={{ position: 'absolute', top: '10px', left: '50%', transform: 'translateX(-50%)', zIndex: 1000, background: 'rgba(0,0,0,0.8)', padding: '6px 12px', borderRadius: '20px', border: '1px solid #00ccff', color: '#00ccff', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '8px', pointerEvents: 'none', animation: 'pulse 2s infinite' }}>
+                <RefreshCw size={14} className="spin" /> Updating Infrastructure...
+              </div>
+            )}
+            {/* OSM POIs (Racks, Water, Repair) */}
+            <OSMPoisLayer
+              showRacks={showBikeRacks}
+              showWater={showWaterFountains}
+              showRepair={showRepairStations}
+              onPoisFetched={(newPois) => setOsmPois(prev => [...prev, ...newPois])}
+              existingCache={osmPoisCache}
+              onZoomChange={setCurrentZoom}
+              setIsLoading={setIsOsmLoading}
+            />
+            {currentZoom >= 15 && osmPois.map(poi => {
+              const isRack = poi.type === 'bicycle_parking';
+              const isWater = poi.type === 'drinking_water';
+              const isRepair = poi.type === 'bicycle_repair_station';
+
+              if (isRack && !showBikeRacks) return null;
+              if (isWater && !showWaterFountains) return null;
+              if (isRepair && !showRepairStations) return null;
+
+              const color = isRack ? '#00ccff' : isWater ? '#3b82f6' : '#f59e0b';
+              const iconHtml = isRack
+                ? `<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-audio-waveform"><path d="M2 13a2 2 0 0 0 2-2V7a2 2 0 0 1 4 0v13a2 2 0 0 0 4 0V4a2 2 0 0 1 4 0v13a2 2 0 0 0 4 0v-4a2 2 0 0 1 2-2"/></svg>`
+                : isWater
+                  ? `<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-droplets"><path d="M7 16.3c2.2 0 4-1.8 4-4 0-3.3-4-8-4-8s-4 4.7-4 8c0 2.2 1.8 4 4 4Z"/><path d="M17 22.3c2.2 0 4-1.8 4-4 0-3.3-4-8-4-8s-4 4.7-4 8c0 2.2 1.8 4 4 4Z"/></svg>`
+                  : `<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-wrench"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>`;
+
+              return (
+                <Marker
+                  key={poi.id}
+                  position={[poi.lat, poi.lng]}
+                  icon={L.divIcon({
+                    className: 'osm-poi-icon',
+                    html: `
+                      <div style="background: ${color}22; border-radius: 50%; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; border: 1px solid ${color}88;">
+                        ${iconHtml}
+                      </div>
+                    `,
+                    iconSize: [32, 32],
+                    iconAnchor: [16, 16]
+                  })}
+                >
+                  <Popup>
+                    <div style={{ color: '#fff', background: '#111', padding: '10px', borderRadius: '8px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: color, marginBottom: '8px' }}>
+                        {isRack ? <AudioWaveform size={18} /> : isWater ? <Droplet size={18} /> : <Wrench size={18} />}
+                        <strong style={{ fontSize: '14px' }}>{poi.tags?.name || poi.tags?.operator || (isRack ? 'Bicycle Parking' : isWater ? 'Water Fountain' : 'Repair Station')}</strong>
+                      </div>
+                      <div style={{ fontSize: '12px', opacity: 0.8 }}>
+                        {poi.tags?.capacity && <p style={{ margin: '4px 0' }}>Capacity: {poi.tags.capacity}</p>}
+                        {poi.tags?.covered === 'yes' && <p style={{ margin: '4px 0' }}>✅ Covered</p>}
+                        {poi.tags?.access && <p style={{ margin: '4px 0' }}>Access: {poi.tags.access}</p>}
+                        <p style={{ margin: '4px 0', opacity: 0.5 }}>Source: OpenStreetMap</p>
+                      </div>
+                    </div>
+                  </Popup>
+                </Marker>
+              );
+            })}
           </MapContainer>
         </section>
       </main>

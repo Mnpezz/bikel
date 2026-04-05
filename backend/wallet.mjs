@@ -172,9 +172,17 @@ export class CashuProvider extends WalletProvider {
         this.ndk = ndk;
         this.mintUrls = Array.isArray(mintUrls) ? mintUrls : (mintUrls ? [mintUrls] : []);
         this.wallet = new NDKCashuWallet(ndk);
-        // In 0.7.1, we set the mints array directly
-        this.wallet.mints = this.mintUrls;
-        console.log(`[Cashu] Wallet initialized with ${this.mintUrls.length} mint(s).`);
+        
+        // Robust mint initialization for both old and new NDK-wallet versions
+        if (typeof this.wallet.addMint === 'function') {
+            this.mintUrls.forEach(url => {
+                console.log(`[Cashu] Adding mint: ${url}`);
+                this.wallet.addMint(url);
+            });
+        } else {
+            console.log(`[Cashu] Setting mints directly: ${this.mintUrls.length} found.`);
+            this.wallet.mints = this.mintUrls;
+        }
     }
 
     async pay(bolt11) {

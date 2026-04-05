@@ -827,7 +827,7 @@ function parseRideEvent(event: NDKEvent): RideEvent | null {
 
         return {
             id: event.id,
-            pubkey: event.author.npub,
+            pubkey: event.pubkey,
             hexPubkey: event.pubkey,
             time: event.created_at || Math.floor(Date.now() / 1000),
             distance,
@@ -1046,10 +1046,11 @@ export interface CheckpointEvent {
 
 export async function fetchRecentRides(onUpdate?: (rides: RideEvent[]) => void): Promise<RideEvent[]> {
     const ndk = await connectNDK();
+    const since = Math.floor(Date.now() / 1000) - (14 * 24 * 60 * 60); // Last 14 days
     const filters: NDKFilter[] = [
-        { kinds: [33301 as any, 1301 as any], limit: 250 },
-        { kinds: [1 as any], '#t': ['bikel'], limit: 100 },
-        { kinds: [1 as any], '#t': ['cycling'], limit: 100 },
+        { kinds: [33301 as any, 1301 as any], since, limit: 150 },
+        { kinds: [1 as any], '#t': ['bikel'], since, limit: 100 },
+        { kinds: [1 as any], '#t': ['cycling'], since, limit: 100 },
     ];
 
     const ridesMap = new Map<string, RideEvent>();
@@ -1087,8 +1088,8 @@ export async function fetchRecentRides(onUpdate?: (rides: RideEvent[]) => void):
 
     console.log("[Nostr] Fetching recent Bikel & Runstr rides...");
 
-    // Use a longer 15s window for comprehensive discovery, but the UI will be snappy thanks to onUpdate.
-    await fetchEventsWithTimeout(ndk, filters, 15000, handleEvent);
+    // Use a shorter 8s window for discovery. The UI is snappy thanks to onUpdate.
+    await fetchEventsWithTimeout(ndk, filters, 8000, handleEvent);
     return Array.from(ridesMap.values()).sort((a, b) => b.time - a.time);
 }
 
@@ -2095,11 +2096,11 @@ export async function fetchApprovedBots(): Promise<ApprovedBot[]> {
         console.log('[Nostr] Discovering Bikel bots via Kind 33400...');
         const ndk = await connectNDK();
 
-        // Query for bot announcements with a short 5s timeout
+        // Query for bot announcements with a generous 20s timeout
         const events = await fetchEventsWithTimeout(ndk, [{
             kinds: [33400 as any],
-            '#t': ['bikel-bot']
-        }], 5000);
+            '#t': ['bikel-bot', 'bikel']
+        }], 20000);
 
         if (!events || events.size === 0) {
             console.warn('[Nostr] No bots found on relays.');

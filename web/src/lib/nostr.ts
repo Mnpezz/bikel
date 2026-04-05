@@ -23,7 +23,7 @@ export async function connectNDK(): Promise<NDK> {
     // Race connection against a 5s timeout to ensure flaky relays don't hang the app
     await Promise.race([
         globalNdk.connect().catch((e) => console.error("[Nostr] Connection error:", e)),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), 5000))
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), 15000))
     ]).catch(e => console.warn("[Nostr] NDK connect completed with errors or timeout:", e.message));
 
     console.log("[Nostr] Connected.");
@@ -421,7 +421,7 @@ function parseRideEvent(event: NDKEvent): RideEvent | null {
 
         return {
             id: event.id,
-            pubkey: event.author.npub,
+            pubkey: event.pubkey,
             hexPubkey: event.pubkey,
             time: event.created_at || Math.floor(Date.now() / 1000),
             distance,
@@ -740,7 +740,7 @@ export async function fetchScheduledRides(): Promise<ScheduledRideEvent[]> {
 
                 scheduledRides.push({
                     id: event.id,
-                    pubkey: event.author.npub,
+                    pubkey: event.pubkey,
                     hexPubkey: event.pubkey,
                     dTag,
                     name,
@@ -885,7 +885,7 @@ export async function fetchContests(): Promise<ContestEvent[]> {
             if (endTime > (Date.now() / 1000) - 86400) {
                 contests.push({
                     id: event.id,
-                    pubkey: event.author.npub,
+                    pubkey: event.pubkey,
                     hexPubkey: event.pubkey,
                     dTag,
                     name,
@@ -951,7 +951,7 @@ export async function fetchCheckpoints(): Promise<CheckpointEvent[]> {
             if (endTime === 0 || endTime > now - 86400) {
                 checkpoints.push({
                     id: event.id,
-                    pubkey: event.author.npub,
+                    pubkey: event.pubkey,
                     hexPubkey: event.pubkey,
                     dTag,
                     title,
@@ -1307,14 +1307,12 @@ export async function fetchApprovedBots(): Promise<ApprovedBot[]> {
         console.log('[Nostr] Discovering Bikel bots via Kind 33400...');
         const ndk = await connectNDK();
 
-        // Query for bot announcements with a short 5s timeout
-        // Hardcoded filter for Bikel-compatible bots
+        // Query for bot announcements with a generous 20s timeout
         const filters: NDKFilter[] = [{
             kinds: [33400 as any],
-            '#t': ['bikel-bot']
+            '#t': ['bikel-bot', 'bikel']
         }];
-
-        const events = await ndk.fetchEvents(filters);
+        const events = await fetchEventsWithTimeout(ndk, filters, 20000);
 
         if (!events || events.size === 0) {
             console.warn('[Nostr] No bots found on relays.');

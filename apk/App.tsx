@@ -598,6 +598,14 @@ export default function App() {
   const [reactions, setReactions] = useState<Record<string, ReactionSummary[]>>({});
   const [expandedComments, setExpandedComments] = useState<Record<string, boolean>>({});
   const [reactingId, setReactingId] = useState<string | null>(null);
+  const [showRacks, setShowRacks] = useState(false);
+  const [showWater, setShowWater] = useState(false);
+  const [showRepair, setShowRepair] = useState(false);
+  const [isOsmLoading, setIsOsmLoading] = useState(false);
+  const [osmPois, setOsmPois] = useState<any[]>([]);
+  const osmPoisCache = useRef<Set<string>>(new Set());
+  const poiFetchTimer = useRef<NodeJS.Timeout | null>(null);
+  const lastMapBoundsRef = useRef<{ minLat: number; minLng: number; maxLat: number; maxLng: number; zoom: number } | null>(null);
 
   const [selectedMapRide, setSelectedMapRide] = useState<RideEvent | null>(null);
   const [selectedMapGroup, setSelectedMapGroup] = useState<GroupedCheckpoint | null>(null);
@@ -868,6 +876,110 @@ export default function App() {
     await AsyncStorage.setItem('bikel_auto_detect', value ? 'true' : 'false');
     await syncAutoDetectState(true);
   };
+
+  const fetchPoisFromOSM = async (
+    boundsOverride?: { minLat: number; minLng: number; maxLat: number; maxLng: number },
+    freshFeatures?: { racks: boolean; water: boolean; repair: boolean }
+  ) => {
+    try {
+      setIsOsmLoading(true);
+      const types = [];
+      const racks = freshFeatures ? freshFeatures.racks : showRacks;
+      const water = freshFeatures ? freshFeatures.water : showWater;
+      const repair = freshFeatures ? freshFeatures.repair : showRepair;
+
+      if (racks) types.push('"amenity"="bicycle_parking"');
+      if (water) types.push('"amenity"="drinking_water"');
+      if (repair) types.push('"amenity"="bicycle_repair_station"');
+
+      if (types.length === 0) {
+        setIsOsmLoading(false);
+        return;
+      }
+
+      const { minLat, minLng, maxLat, maxLng } = boundsOverride || lastMapBoundsRef.current || {};
+      if (minLat === undefined) return;
+
+      const query = `
+        [out:json][timeout:25];
+        (
+          ${types.map(t => `node[${t}](${minLat},${minLng},${maxLat},${maxLng});`).join('\n')}
+        );
+        out body;
+      `;
+
+      const response = await fetch('https://overpass-api.de/api/interpreter', {
+        method: 'POST',
+        body: query
+      });
+      const data = await response.json();
+
+      if (data.elements) {
+        const newPois = data.elements.map((el: any) => ({
+          id: `osm_${el.id}`,
+          lat: el.lat,
+          lng: el.lon,
+          type: el.tags.amenity,
+          name: el.tags.name || el.tags.operator || (el.tags.amenity === 'bicycle_parking' ? 'Bike Rack' : el.tags.amenity === 'drinking_water' ? 'Water Fountain' : 'Repair Station')
+        }));
+
+        if (newPois.length > 0) {
+          setOsmPois(prev => {
+            const combined = [...prev];
+            newPois.forEach((p: any) => {
+              if (!osmPoisCache.current.has(p.id)) {
+                osmPoisCache.current.add(p.id);
+                combined.push(p);
+              }
+            });
+            return combined;
+          });
+        }
+      }
+    } catch (e) {
+      console.error('[OSM] Fetch Error:', e);
+    } finally {
+      setIsOsmLoading(false);
+    }
+  };
+
+  const toggleOsmFeature = async (feature: 'racks' | 'water' | 'repair', newValue: boolean) => {
+    if (feature === 'racks') setShowRacks(newValue);
+    if (feature === 'water') setShowWater(newValue);
+    if (feature === 'repair') setShowRepair(newValue);
+
+    if (newValue && lastMapBoundsRef.current && lastMapBoundsRef.current.zoom >= 16) {
+      // Pass fresh state to avoid waiting for React's async update
+      fetchPoisFromOSM(undefined, {
+        racks: feature === 'racks' ? newValue : showRacks,
+        water: feature === 'water' ? newValue : showWater,
+        repair: feature === 'repair' ? newValue : showRepair
+      });
+    }
+
+    try {
+      await AsyncStorage.setItem(`bikel_show_${feature}`, newValue ? 'true' : 'false');
+    } catch (e) { }
+
+    if (!newValue) {
+      const amenity = feature === 'racks' ? 'bicycle_parking' : feature === 'water' ? 'drinking_water' : 'bicycle_repair_station';
+      setOsmPois(prev => prev.filter(p => p.type !== amenity));
+    }
+  };
+
+  useEffect(() => {
+    const loadPoiPrefs = async () => {
+      const [r, w, s] = await Promise.all([
+        AsyncStorage.getItem('bikel_show_racks'),
+        AsyncStorage.getItem('bikel_show_water'),
+        AsyncStorage.getItem('bikel_show_repair')
+      ]);
+      if (r === 'true') setShowRacks(true);
+      if (w === 'true') setShowWater(true);
+      if (s === 'true') setShowRepair(true);
+    };
+    loadPoiPrefs();
+  }, []);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -1161,10 +1273,27 @@ export default function App() {
       size: [32, 32]
     }] : [];
 
-    // 2. Click detection for POI groups is now handled by coordinate hit-testing in ON_MAP_TOUCHED.
-    // This avoids misleading clustering (green/yellow bubbles).
+    // 2. OSM POIs
+    (osmPois || []).forEach(poi => {
+      if (poi.type === 'bicycle_parking' && !showRacks) return;
+      if (poi.type === 'drinking_water' && !showWater) return;
+      if (poi.type === 'bicycle_repair_station' && !showRepair) return;
+
+      let icon = '📍';
+      if (poi.type === 'bicycle_parking') icon = '🔒';
+      if (poi.type === 'drinking_water') icon = '💧';
+      if (poi.type === 'bicycle_repair_station') icon = '🛠️';
+
+      markers.push({
+        id: poi.id,
+        position: { lat: poi.lat, lng: poi.lng },
+        icon: icon,
+        size: [24, 24]
+      });
+    });
+
     return markers;
-  }, [location, groupedCheckpoints]);
+  }, [location, groupedCheckpoints, osmPois, showRacks, showWater, showRepair]);
 
   useEffect(() => {
     if (!location || checkpoints.length === 0) return;
@@ -1869,9 +1998,38 @@ export default function App() {
                   setSelectedRoute(nearestRide.route.map(pt => ({ lat: pt[0], lng: pt[1] })));
                 }
               }
+            } else if (message.event === WebViewLeafletEvents.ON_MOVE_END) {
+              const { bounds, zoom } = message.payload;
+              if (zoom !== undefined) setMapZoom(zoom);
+
+              if (bounds) {
+                const minLat = bounds.southWest?.lat || bounds._southWest?.lat;
+                const minLng = bounds.southWest?.lng || bounds._southWest?.lng;
+                const maxLat = bounds.northEast?.lat || bounds._northEast?.lat;
+                const maxLng = bounds.northEast?.lng || bounds._northEast?.lng;
+
+                if (minLat && minLng && maxLat && maxLng) {
+                  lastMapBoundsRef.current = { minLat, minLng, maxLat, maxLng, zoom: zoom || 16 };
+
+                  if ((zoom || 16) >= 16 && (showRacks || showWater || showRepair)) {
+                    if (poiFetchTimer.current) clearTimeout(poiFetchTimer.current);
+                    poiFetchTimer.current = setTimeout(() => {
+                      fetchPoisFromOSM({ minLat, minLng, maxLat, maxLng });
+                    }, 1500); // 1.5s debounce for mobile stability
+                  }
+                }
+              }
             }
           }}
         />
+        {isOsmLoading && (
+          <View style={{ position: 'absolute', top: 50, left: 0, right: 0, alignItems: 'center', pointerEvents: 'none' }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: 'rgba(0,0,0,0.8)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20, borderWidth: 1, borderColor: '#00ccff' }}>
+              <ActivityIndicator size="small" color="#00ccff" />
+              <Text style={{ color: '#00ccff', fontSize: 11, fontWeight: 'bold' }}>REFRESHING INFRASTRUCTURE...</Text>
+            </View>
+          </View>
+        )}
       </View>
 
       {/* Map Picker Selection Hint */}
@@ -2311,6 +2469,33 @@ export default function App() {
                   <View style={{ width: 20, height: 20, borderRadius: 10, backgroundColor: '#fff', alignSelf: autoDetect ? 'flex-end' : 'flex-start' }} />
                 </View>
               </TouchableOpacity>
+            </View>
+
+            {/* Map Features */}
+            <View style={[styles.settingsSection, { borderColor: 'rgba(0,204,255,0.2)', borderWidth: 1 }]}>
+              <Text style={[styles.settingsLabel, { color: '#00ccff' }]}>MAP FEATURES (ZOOM 16+)</Text>
+              <Text style={{ color: '#9ba1a6', fontSize: 12, marginBottom: 16, lineHeight: 18 }}>
+                Show nearby cycling infrastructure from OpenStreetMap. Markers appear when you zoom in close.
+              </Text>
+
+              <View style={{ gap: 10 }}>
+                {[
+                  { id: 'racks', label: 'BIKE RACKS', state: showRacks, color: '#00ccff' },
+                  { id: 'water', label: 'WATER FOUNTAINS', state: showWater, color: '#00ccff' },
+                  { id: 'repair', label: 'REPAIR STATIONS', state: showRepair, color: '#00ccff' }
+                ].map(item => (
+                  <TouchableOpacity
+                    key={item.id}
+                    style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: item.state ? 'rgba(0,204,255,0.1)' : 'rgba(255,255,255,0.05)', padding: 12, borderRadius: 10, borderWidth: 1, borderColor: item.state ? item.color : 'rgba(255,255,255,0.1)' }}
+                    onPress={() => toggleOsmFeature(item.id as any, !item.state)}
+                  >
+                    <Text style={{ color: item.state ? '#fff' : '#888', fontWeight: 'bold', fontSize: 14 }}>{item.label}</Text>
+                    <View style={{ width: 36, height: 20, borderRadius: 10, backgroundColor: item.state ? item.color : 'rgba(255,255,255,0.1)', justifyContent: 'center', padding: 2 }}>
+                      <View style={{ width: 16, height: 16, borderRadius: 8, backgroundColor: '#fff', alignSelf: item.state ? 'flex-end' : 'flex-start' }} />
+                    </View>
+                  </TouchableOpacity>
+                ))}
+              </View>
             </View>
 
             {/* Battery Optimization */}

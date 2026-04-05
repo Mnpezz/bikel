@@ -461,27 +461,30 @@ async function initializeNDK() {
 
     // 2. Initialize secondary eCash pocket if needed
     if (ENABLE_NUTZAPS) {
-        if (primaryWallet.canSendNutzap) {
-            nutzapWallet = primaryWallet; // Already an eCash-capable wallet
-        } else {
-            console.log('[Bot] Initializing secondary eCash pocket for Nutzaps...');
-            nutzapWallet = createWalletProvider({
-                provider: 'cashu',
-                mintUrl: process.env.CASHU_MINT_URL
-            }, ndk);
-        }
+        try {
+            if (primaryWallet.canSendNutzap) {
+                nutzapWallet = primaryWallet; // Already an eCash-capable wallet
+            } else {
+                console.log('[Bot] Initializing secondary eCash pocket for Nutzaps...');
+                nutzapWallet = createWalletProvider({
+                    provider: 'cashu',
+                    mintUrl: process.env.CASHU_MINT_URL
+                }, ndk);
+            }
 
-        // Initialize Autonomous Nutzap Collector
-        if (nutzapWallet.wallet) {
-            console.log('[Bot] Starting Nutzap Monitor...');
-            const botUser = await ndk.signer?.user();
-            const { NDKNutzapMonitor } = await import('@nostr-dev-kit/ndk-wallet');
-            nutzapMonitor = new NDKNutzapMonitor(ndk, botUser);
-            nutzapMonitor.wallet = nutzapWallet.wallet;
-            await nutzapMonitor.start();
+            // Initialize Manual Nutzap Collector
+            if (nutzapWallet.wallet) {
+                const botUser = await ndk.signer?.user();
+                if (!botUser) throw new Error("NDK Signer required for Nutzap Collection");
+                
+                // Start manual monitoring for Kind 9321 (Nutzaps)
+                startManualNutzapCollector(ndk);
 
-            // Announce support to the world
-            await announceBotCapabilities(ndk, nutzapWallet.mintUrls);
+                // Announce support to the world
+                await announceBotCapabilities(ndk, nutzapWallet.mintUrls);
+            }
+        } catch (e) {
+            console.warn('[Bot] Nutzap Monitor failed to start, skipping...', e.message);
         }
     }
 
@@ -709,6 +712,36 @@ async function payoutByLud16(lud16, sats) {
 }
 
 // ─────────────────────────────────────────────
+// Manual Nutzap Collector (Bypassing broken NDKNutzapMonitor)
+// ─────────────────────────────────────────────
+async function startManualNutzapCollector(ndk) {
+    const botUser = await ndk.signer?.user();
+    if (!botUser) return;
+    
+    console.log('[Bot] Manual Nutzap Collector active.');
+    const sub = ndk.subscribe({
+        kinds: [9321],
+        '#p': [botUser.pubkey],
+        since: Math.floor(Date.now() / 1000)
+    }, { closeOnEose: false });
+
+    sub.on('event', async (event) => {
+        try {
+            console.log(`[Bot] ⚡ Incoming Nutzap detected: ${event.id.substring(0, 8)}`);
+            // Attempt to redeem via the nutzapWallet's internal NDKCashuWallet
+            if (nutzapWallet?.wallet?.redeem) {
+                await nutzapWallet.wallet.redeem(event);
+                console.log(`[Bot] ✅ Nutzap redeemed successfully!`);
+            } else {
+                 console.warn(`[Bot] Could not redeem Nutzap: Wallet redeem method not found.`);
+            }
+        } catch (e) {
+            console.warn(`[Bot] Failed to redeem Nutzap:`, e.message);
+        }
+    });
+}
+
+// ─────────────────────────────────────────────
 // Bot Identity — Announce Nutzap Info (Kind 10019)
 // Tells everyone which mints the bot trusts for eCash
 // ─────────────────────────────────────────────
@@ -717,7 +750,7 @@ async function announceBotCapabilities(ndk, mintUrls = []) {
     try {
         const botUser = await ndk.signer.user();
         console.log(`[Bot] Announcing Nutzap support for ${mintUrls.length} mint(s)...`);
-        
+
         const announce = new NDKEvent(ndk);
         announce.kind = 10019;
         announce.content = "";
@@ -727,7 +760,7 @@ async function announceBotCapabilities(ndk, mintUrls = []) {
             // Add a client tag for Bikel
             ['client', 'bikel']
         ];
-        
+
         await announce.publish();
         console.log(`[Bot] ✅ Nutzap info published: ${announce.id}`);
     } catch (err) {
